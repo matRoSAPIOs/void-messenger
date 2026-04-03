@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import EyeBackground from '../components/EyeBackground';
 
 const API = 'http://127.0.0.1:8000';
 
@@ -436,10 +437,10 @@ export default function Chat() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px' }}
+              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px', position: 'relative', overflow: 'hidden' }}
             >
-              <div style={{ fontSize: '32px', opacity: 0.15 }}>◈</div>
-              <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: '14px' }}>выбери чат слева</div>
+              <EyeBackground contained />
+              <div style={{ color: 'rgba(255,255,255,0.15)', fontSize: '14px', position: 'absolute', bottom: '20px', left: 0, right: 0, textAlign: 'center', zIndex: 1 }}>выбери чат слева</div>
             </motion.div>
           )}
         </AnimatePresence>

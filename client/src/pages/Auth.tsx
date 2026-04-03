@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import EyeBackground from '../components/EyeBackground';
 
 const API = 'http://127.0.0.1:8000';
 
@@ -37,8 +38,11 @@ export default function Auth() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      minHeight: '100vh'
+      minHeight: '100vh',
+      position: 'relative',
+      overflow: 'hidden'
     }}>
+      <EyeBackground />
       <div className="glass" style={{ padding: '40px', width: '360px' }}>
         <h1 style={{ fontSize: '24px', marginBottom: '8px' }}>VOID</h1>
         <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '13px', marginBottom: '32px' }}>
