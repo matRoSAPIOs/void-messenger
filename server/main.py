@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 import json
 import base64
 
@@ -164,6 +164,37 @@ async def get_contacts(token: str, db: AsyncSession = Depends(get_db)):
                 "aura_color": user.aura_color or "#7850ff",
                 "aura_style": user.aura_style or "solid"
             })
+    return result
+
+@app.get("/messages")
+async def get_messages(token: str, with_user: str, db: AsyncSession = Depends(get_db)):
+    username = decode_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Не авторизован")
+    owner = await db.execute(select(User).where(User.username == username))
+    owner = owner.scalar_one_or_none()
+    other = await db.execute(select(User).where(User.username == with_user))
+    other = other.scalar_one_or_none()
+    if not owner or not other:
+        raise HTTPException(status_code=404, detail="Не найден")
+    msgs = await db.execute(
+        select(Message).where(
+            or_(
+                and_(Message.author_id == owner.id, Message.recipient_id == other.id),
+                and_(Message.author_id == other.id, Message.recipient_id == owner.id),
+            )
+        ).order_by(Message.created_at)
+    )
+    msgs = msgs.scalars().all()
+    result = []
+    for m in msgs:
+        author = await db.execute(select(User).where(User.id == m.author_id))
+        author = author.scalar_one_or_none()
+        result.append({
+            "from": author.username,
+            "to": with_user if author.username == username else username,
+            "content": m.content
+        })
     return result
 
 @app.websocket("/ws/{token}")

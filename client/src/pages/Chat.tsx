@@ -3,6 +3,7 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import EyeBackground from '../components/EyeBackground';
+import { uploadFile } from '../utils/uploadFile';
 
 const API = 'http://127.0.0.1:8000';
 
@@ -89,6 +90,11 @@ export default function Chat() {
   const [unread, setUnread] = useState<Record<string, number>>({});
   const ws = useRef<WebSocket | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [previewFile, setPreviewFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [caption, setCaption] = useState('');
   const navigate = useNavigate();
   const token = localStorage.getItem('token');
   const myUsername = localStorage.getItem('username');
@@ -156,15 +162,54 @@ export default function Chat() {
     setSelectedUser(user);
   };
 
-  const selectUser = (user: User) => {
+  const selectUser = async (user: User) => {
     setSelectedUser(user);
     setUnread(prev => ({ ...prev, [user.username]: 0 }));
+    if (!messages[user.username]) {
+      try {
+        const res = await axios.get(`${API}/messages?token=${token}&with_user=${user.username}`);
+        setMessages(prev => ({ ...prev, [user.username]: res.data }));
+      } catch {}
+    }
   };
 
   const sendMessage = () => {
     if (!input.trim() || !selectedUser || !ws.current) return;
     ws.current.send(JSON.stringify({ to: selectedUser.username, content: input }));
     setInput('');
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPreviewUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev);
+      return file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
+    });
+    setPreviewFile(file);
+    e.target.value = '';
+  };
+
+  const sendFile = async () => {
+    if (!previewFile || !selectedUser || !ws.current) return;
+    setUploading(true);
+    try {
+      const url = await uploadFile(previewFile);
+      const isImage = previewFile.type.startsWith('image/');
+      const isVideo = previewFile.type.startsWith('video/');
+      const fileContent = isImage ? `__img__${url}` : isVideo ? `__vid__${url}` : `__file__${previewFile.name}__url__${url}`;
+      const content = caption ? `${fileContent}__caption__${caption}` : fileContent;
+      ws.current.send(JSON.stringify({ to: selectedUser.username, content }));
+      setPreviewUrl(prev => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      setPreviewFile(null);
+      setCaption('');
+    } catch {
+      alert('Ошибка загрузки');
+    }
+    setUploading(false);
   };
 
   const logout = () => {
@@ -405,7 +450,47 @@ export default function Chat() {
                         borderBottomRightRadius: msg.from === myUsername ? '4px' : '14px',
                         borderBottomLeftRadius: msg.from === myUsername ? '14px' : '4px',
                       }}>
-                        {msg.content}
+                        {msg.content.startsWith('__img__') ? (
+                          <div>
+                            <img
+                              src={msg.content.split('__caption__')[0].replace('__img__', '')}
+                              alt="img"
+                              style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }}
+                            />
+                            {msg.content.includes('__caption__') && (
+                              <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>
+                                {msg.content.split('__caption__')[1]}
+                              </div>
+                            )}
+                          </div>
+                        ) : msg.content.startsWith('__vid__') ? (
+                          <div>
+                            <video
+                              src={msg.content.split('__caption__')[0].replace('__vid__', '')}
+                              controls
+                              style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }}
+                            />
+                            {msg.content.includes('__caption__') && (
+                              <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>
+                                {msg.content.split('__caption__')[1]}
+                              </div>
+                            )}
+                          </div>
+                        ) : msg.content.startsWith('__file__') ? (
+                          <a
+                            href={msg.content.split('__url__')[1].split('__caption__')[0]}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ color: 'rgba(180,150,255,0.9)', fontSize: '12px' }}
+                          >
+                            📎 {msg.content.split('__file__')[1].split('__url__')[0]}
+                            {msg.content.includes('__caption__') && (
+                              <span style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>
+                                {msg.content.split('__caption__')[1]}
+                              </span>
+                            )}
+                          </a>
+                        ) : msg.content}
                       </div>
                     </motion.div>
                   ))}
@@ -413,19 +498,41 @@ export default function Chat() {
                 <div ref={messagesEnd} />
               </div>
 
-              <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '10px' }}>
+              <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*,.pdf,.doc,.docx,.zip"
+                  style={{ display: 'none' }}
+                  onChange={handleFileUpload}
+                />
+                <motion.button
+                  type="button"
+                  disabled={uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                  whileTap={{ scale: 0.93 }}
+                  style={{
+                    background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
+                    color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px',
+                    cursor: uploading ? 'wait' : 'pointer', fontSize: '16px', flexShrink: 0,
+                    opacity: uploading ? 0.6 : 1,
+                  }}
+                >
+                  📎
+                </motion.button>
                 <input
                   className="input"
                   placeholder="сообщение..."
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && sendMessage()}
+                  style={{ flex: 1, minWidth: 0 }}
                 />
                 <motion.button
                   className="btn"
                   onClick={sendMessage}
                   whileTap={{ scale: 0.93 }}
-                  style={{ width: '80px' }}
+                  style={{ width: '80px', flexShrink: 0 }}
                 >
                   →
                 </motion.button>
@@ -445,6 +552,97 @@ export default function Chat() {
           )}
         </AnimatePresence>
       </motion.div>
+
+      <AnimatePresence>
+        {previewFile && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              zIndex: 100
+            }}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="glass"
+              style={{ padding: '20px', width: '400px', maxWidth: '90vw' }}
+            >
+              <div style={{ fontSize: '14px', fontWeight: 500, marginBottom: '16px' }}>
+                Отправить файл
+              </div>
+
+              {previewUrl && (
+                <img
+                  src={previewUrl}
+                  alt="preview"
+                  style={{ width: '100%', borderRadius: '10px', marginBottom: '14px', maxHeight: '260px', objectFit: 'cover' }}
+                />
+              )}
+
+              {!previewUrl && (
+                <div style={{
+                  padding: '20px', background: 'rgba(255,255,255,0.05)',
+                  borderRadius: '10px', marginBottom: '14px',
+                  display: 'flex', alignItems: 'center', gap: '10px'
+                }}>
+                  <span style={{ fontSize: '24px' }}>📎</span>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 500 }}>{previewFile.name}</div>
+                    <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>
+                      {(previewFile.size / 1024 / 1024).toFixed(2)} МБ
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <input
+                className="input"
+                placeholder="добавить подпись..."
+                value={caption}
+                onChange={e => setCaption(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && sendFile()}
+                style={{ marginBottom: '12px' }}
+              />
+
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewUrl(prev => {
+                      if (prev) URL.revokeObjectURL(prev);
+                      return null;
+                    });
+                    setPreviewFile(null);
+                    setCaption('');
+                  }}
+                  style={{
+                    flex: 1, background: 'rgba(255,255,255,0.07)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: 'rgba(255,255,255,0.6)', borderRadius: '8px',
+                    padding: '10px', cursor: 'pointer', fontSize: '13px'
+                  }}
+                >
+                  отмена
+                </button>
+                <motion.button
+                  className="btn"
+                  onClick={sendFile}
+                  whileTap={{ scale: 0.97 }}
+                  style={{ flex: 1 }}
+                  disabled={uploading}
+                >
+                  {uploading ? 'загрузка...' : 'отправить →'}
+                </motion.button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
