@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 import json
+import base64
 
 from database import get_db, init_db
 from models import User, Contact, Message
@@ -60,6 +61,54 @@ async def login(data: dict, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
     return {"token": create_token({"sub": user.username}), "username": user.username, "tag": user.tag}
 
+@app.get("/profile")
+async def get_profile(token: str, db: AsyncSession = Depends(get_db)):
+    username = decode_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Не авторизован")
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Не найден")
+    return {
+        "id": user.id,
+        "username": user.username,
+        "tag": user.tag,
+        "avatar": user.avatar,
+        "bio": user.bio,
+        "aura_color": user.aura_color or "#7850ff",
+        "aura_style": user.aura_style or "solid"
+    }
+
+@app.post("/profile")
+async def update_profile(data: dict, db: AsyncSession = Depends(get_db)):
+    token = data.get("token")
+    username = decode_token(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Не авторизован")
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Не найден")
+    if "username" in data and data["username"] != username:
+        existing = await db.execute(select(User).where(User.username == data["username"]))
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Никнейм уже занят")
+        user.username = data["username"]
+        new_token = create_token({"sub": data["username"]})
+    else:
+        new_token = token
+    if "bio" in data:
+        user.bio = data["bio"]
+    if "avatar" in data:
+        user.avatar = data["avatar"]
+    if "aura_color" in data:
+        user.aura_color = data["aura_color"]
+    if "aura_style" in data:
+        user.aura_style = data["aura_style"]
+    await db.commit()
+    return {"ok": True, "token": new_token, "username": user.username, "tag": user.tag}
+
 @app.get("/search")
 async def search_user(tag: str, db: AsyncSession = Depends(get_db)):
     if not tag.startswith("@"):
@@ -68,7 +117,7 @@ async def search_user(tag: str, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-    return {"id": user.id, "username": user.username, "tag": user.tag}
+    return {"id": user.id, "username": user.username, "tag": user.tag, "avatar": user.avatar, "aura_color": user.aura_color, "aura_style": user.aura_style}
 
 @app.post("/contacts")
 async def add_contact(data: dict, db: AsyncSession = Depends(get_db)):
@@ -107,7 +156,14 @@ async def get_contacts(token: str, db: AsyncSession = Depends(get_db)):
         user = await db.execute(select(User).where(User.id == c.contact_id))
         user = user.scalar_one_or_none()
         if user:
-            result.append({"id": user.id, "username": user.username, "tag": user.tag})
+            result.append({
+                "id": user.id,
+                "username": user.username,
+                "tag": user.tag,
+                "avatar": user.avatar,
+                "aura_color": user.aura_color or "#7850ff",
+                "aura_style": user.aura_style or "solid"
+            })
     return result
 
 @app.websocket("/ws/{token}")

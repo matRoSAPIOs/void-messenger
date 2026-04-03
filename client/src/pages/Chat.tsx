@@ -15,7 +15,65 @@ interface User {
   id: number;
   username: string;
   tag: string;
+  avatar?: string;
+  aura_color?: string;
+  aura_style?: string;
 }
+
+const Avatar = ({ user, size = 34, showOnline, isOnline }: {
+  user: User, size?: number, showOnline?: boolean, isOnline?: boolean
+}) => {
+  const auraColor = user.aura_color || '#7850ff';
+  const auraStyle = user.aura_style || 'solid';
+
+  const getAura = () => {
+    switch (auraStyle) {
+      case 'pulse':
+        return { boxShadow: `0 0 0 3px ${auraColor}60` };
+      case 'neon':
+        return { boxShadow: `0 0 8px 2px ${auraColor}, 0 0 16px 4px ${auraColor}40` };
+      case 'rainbow':
+        return { outline: '3px solid transparent', backgroundClip: 'padding-box' };
+      default:
+        return { boxShadow: `0 0 0 2px ${auraColor}` };
+    }
+  };
+
+  return (
+    <div style={{ position: 'relative', flexShrink: 0 }}>
+      {auraStyle === 'rainbow' && (
+        <div style={{
+          position: 'absolute', inset: '-3px', borderRadius: '50%', zIndex: 0,
+          background: 'conic-gradient(#ff0000, #ff8c00, #ffff00, #00e68a, #00c8ff, #7850ff, #ff0000)'
+        }} />
+      )}
+      <div style={{
+        width: size, height: size, borderRadius: '50%',
+        background: user.avatar ? 'transparent' : 'rgba(120,80,255,0.4)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: size * 0.38, fontWeight: 500, overflow: 'hidden',
+        position: 'relative', zIndex: 1,
+        ...getAura()
+      }}>
+        {user.avatar
+          ? <img src={user.avatar} alt="av" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          : user.username[0]?.toUpperCase()
+        }
+      </div>
+      {showOnline && (
+        <motion.div
+          animate={{ background: isOnline ? 'rgba(80,230,130,1)' : 'rgba(255,255,255,0.2)' }}
+          transition={{ duration: 0.5 }}
+          style={{
+            position: 'absolute', bottom: '1px', right: '1px',
+            width: size * 0.24, height: size * 0.24, borderRadius: '50%',
+            border: '1.5px solid rgba(15,15,26,1)', zIndex: 2
+          }}
+        />
+      )}
+    </div>
+  );
+};
 
 export default function Chat() {
   const [contacts, setContacts] = useState<User[]>([]);
@@ -117,7 +175,6 @@ export default function Chat() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', padding: '20px', gap: '16px' }}>
-
       <motion.div
         className="glass"
         initial={{ x: -40, opacity: 0 }}
@@ -125,9 +182,13 @@ export default function Chat() {
         transition={{ duration: 0.4, ease: 'easeOut' }}
         style={{ width: '240px', display: 'flex', flexDirection: 'column' }}
       >
-        <div style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+        <div
+          onClick={() => navigate('/profile')}
+          style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)', cursor: 'pointer' }}
+        >
           <div style={{ fontSize: '16px', fontWeight: 500 }}>VOID</div>
           <div style={{ fontSize: '11px', color: 'rgba(120,80,255,0.9)', marginTop: '2px' }}>{myTag}</div>
+          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.2)', marginTop: '4px' }}>← нажми чтобы открыть профиль</div>
         </div>
 
         <div style={{ padding: '10px' }}>
@@ -200,9 +261,12 @@ export default function Chat() {
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between'
                       }}
                     >
-                      <div>
-                        <div style={{ fontSize: '12px', fontWeight: 500 }}>{searchResult.username}</div>
-                        <div style={{ fontSize: '11px', color: 'rgba(120,80,255,0.8)' }}>{searchResult.tag}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Avatar user={searchResult} size={30} />
+                        <div>
+                          <div style={{ fontSize: '12px', fontWeight: 500 }}>{searchResult.username}</div>
+                          <div style={{ fontSize: '11px', color: 'rgba(120,80,255,0.8)' }}>{searchResult.tag}</div>
+                        </div>
                       </div>
                       <motion.button
                         onClick={() => addContact(searchResult)}
@@ -247,28 +311,10 @@ export default function Chat() {
                   padding: '10px 12px', borderRadius: '8px', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', gap: '10px',
                   background: selectedUser?.id === user.id ? 'rgba(120,80,255,0.25)' : 'transparent',
-                  marginBottom: '2px', position: 'relative'
+                  marginBottom: '2px'
                 }}
               >
-                <div style={{ position: 'relative' }}>
-                  <div style={{
-                    width: '34px', height: '34px', borderRadius: '50%',
-                    background: 'rgba(120,80,255,0.4)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: '13px', fontWeight: 500
-                  }}>
-                    {user.username[0].toUpperCase()}
-                  </div>
-                  <motion.div
-                    animate={{ background: onlineUsers.includes(user.username) ? 'rgba(80,230,130,1)' : 'rgba(255,255,255,0.2)' }}
-                    transition={{ duration: 0.5 }}
-                    style={{
-                      position: 'absolute', bottom: '1px', right: '1px',
-                      width: '8px', height: '8px', borderRadius: '50%',
-                      border: '1.5px solid rgba(15,15,26,1)'
-                    }}
-                  />
-                </div>
+                <Avatar user={user} size={34} showOnline isOnline={onlineUsers.includes(user.username)} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: '13px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {user.username}
@@ -327,25 +373,7 @@ export default function Chat() {
               style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
             >
               <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{ position: 'relative' }}>
-                  <div style={{
-                    width: '36px', height: '36px', borderRadius: '50%',
-                    background: 'rgba(120,80,255,0.4)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: '14px', fontWeight: 500
-                  }}>
-                    {selectedUser.username[0].toUpperCase()}
-                  </div>
-                  <motion.div
-                    animate={{ background: onlineUsers.includes(selectedUser.username) ? 'rgba(80,230,130,1)' : 'rgba(255,255,255,0.2)' }}
-                    transition={{ duration: 0.5 }}
-                    style={{
-                      position: 'absolute', bottom: '1px', right: '1px',
-                      width: '8px', height: '8px', borderRadius: '50%',
-                      border: '1.5px solid rgba(15,15,26,1)'
-                    }}
-                  />
-                </div>
+                <Avatar user={selectedUser} size={36} showOnline isOnline={onlineUsers.includes(selectedUser.username)} />
                 <div>
                   <div style={{ fontSize: '14px', fontWeight: 500 }}>{selectedUser.username}</div>
                   <motion.div
