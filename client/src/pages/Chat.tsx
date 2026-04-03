@@ -53,6 +53,9 @@ export default function Chat() {
         ...prev,
         [chatKey]: [...(prev[chatKey] || []), msg]
       }));
+      if (msg.from !== myUsername) {
+        loadContacts();
+      }
     };
 
     return () => ws.current?.close();

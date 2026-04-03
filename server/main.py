@@ -145,6 +145,14 @@ async def websocket_endpoint(websocket: WebSocket, token: str, db: AsyncSession 
 
                 if msg["to"] in connected_users:
                     await connected_users[msg["to"]].send_text(payload)
+
+                existing_contact = await db.execute(select(Contact).where(
+                    and_(Contact.owner_id == recipient.id, Contact.contact_id == sender.id)
+                ))
+                if existing_contact.scalar_one_or_none() is None:
+                    db.add(Contact(owner_id=recipient.id, contact_id=sender.id))
+                    await db.commit()
+
                 await websocket.send_text(payload)
 
     except WebSocketDisconnect:
