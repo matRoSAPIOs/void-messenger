@@ -8,10 +8,16 @@ class User(Base):
     
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, nullable=False)
+    tag = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class Contact(Base):
+    __tablename__ = "contacts"
     
-    messages = relationship("Message", back_populates="author")
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+    contact_id = Column(Integer, ForeignKey("users.id"))
 
 class Message(Base):
     __tablename__ = "messages"
@@ -21,5 +27,3 @@ class Message(Base):
     author_id = Column(Integer, ForeignKey("users.id"))
     recipient_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    author = relationship("User", foreign_keys=[author_id], back_populates="messages")

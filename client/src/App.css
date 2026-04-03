@@ -1,0 +1,94 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+body {
+  background: #0f0f1a;
+  min-height: 100vh;
+  color: white;
+  overflow: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: 
+    radial-gradient(ellipse at 20% 50%, rgba(120, 80, 255, 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(0, 140, 255, 0.1) 0%, transparent 50%),
+    radial-gradient(ellipse at 60% 80%, rgba(255, 80, 150, 0.08) 0%, transparent 50%);
+  animation: bgMove 25s ease-in-out infinite alternate;
+  z-index: -1;
+}
+
+@keyframes bgMove {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  33% { transform: translate(-2%, 2%) rotate(1deg); }
+  66% { transform: translate(2%, -1%) rotate(-1deg); }
+  100% { transform: translate(-1%, 3%) rotate(0.5deg); }
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+}
+
+.btn {
+  background: rgba(120, 80, 255, 0.7);
+  border: 1px solid rgba(120, 80, 255, 0.8);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: 'Space Grotesk', sans-serif;
+  transition: all 0.2s;
+  width: 100%;
+}
+
+.btn:hover {
+  background: rgba(120, 80, 255, 0.9);
+  transform: translateY(-1px);
+}
+
+.input {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: 'Space Grotesk', sans-serif;
+  color: white;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.input:focus {
+  border-color: rgba(120, 80, 255, 0.6);
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 80, 255, 0.4);
+  border-radius: 4px;
+}
