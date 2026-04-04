@@ -1,0 +1,3 @@
+cd ~/void-messenger && git pull && systemctl restart void
+
+R:pbI3p`Uo6%HO"z

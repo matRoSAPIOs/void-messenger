@@ -7,7 +7,7 @@ import { uploadFile } from '../utils/uploadFile';
 import UserProfile from './UserProfile';
 import CallModal from '../components/CallModal';
 
-const API = 'http://178.253.45.20:8000';
+const API = 'http://void-messenger.online:8000';
 
 interface Message {
   from: string;
@@ -196,7 +196,7 @@ export default function Chat() {
 
   useEffect(() => {
     loadContacts();
-    ws.current = new WebSocket(`ws://178.253.45.20:8000/ws/${token}`);
+    ws.current = new WebSocket(`wss://void-messenger.online/ws/${token}`);
 
     ws.current.onmessage = async (e) => {
       const msg = JSON.parse(e.data);

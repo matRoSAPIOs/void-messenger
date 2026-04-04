@@ -3,7 +3,7 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import EyeBackground from '../components/EyeBackground';
 
-const API = 'http://178.253.45.20:8000';
+const API = 'http://void-messenger.online:8000';
 
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);

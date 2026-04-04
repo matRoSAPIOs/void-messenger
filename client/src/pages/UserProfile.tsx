@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const API = 'http://178.253.45.20:8000';
+const API = 'http://void-messenger.online:8000';
 
 interface UserData {
   id: number;
