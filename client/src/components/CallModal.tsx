@@ -36,8 +36,8 @@ export default function CallModal({
   const [isMuted, setIsMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const [speaking, setSpeaking] = useState(false);
-  const [remoteSpeaking, setRemoteSpeaking] = useState(false);
+  const speaking = false;
+  const remoteSpeaking = false;
 
   useEffect(() => {
     if (localStream && localVideo.current) {
@@ -61,44 +61,6 @@ export default function CallModal({
     const interval = setInterval(() => setSeconds(s => s + 1), 1000);
     return () => clearInterval(interval);
   }, [isActive]);
-
-  useEffect(() => {
-    if (!localStream || !isActive) return;
-    let animId: number;
-    const ctx = new AudioContext();
-    const source = ctx.createMediaStreamSource(localStream);
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const check = () => {
-      analyser.getByteFrequencyData(data);
-      const avg = data.reduce((a, b) => a + b, 0) / data.length;
-      setSpeaking(avg > 15);
-      animId = requestAnimationFrame(check);
-    };
-    animId = requestAnimationFrame(check);
-    return () => { cancelAnimationFrame(animId); ctx.close(); };
-  }, [localStream, isActive]);
-
-  useEffect(() => {
-    if (!remoteStream || !isActive) return;
-    let animId: number;
-    const ctx = new AudioContext();
-    const source = ctx.createMediaStreamSource(remoteStream);
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const check = () => {
-      analyser.getByteFrequencyData(data);
-      const avg = data.reduce((a, b) => a + b, 0) / data.length;
-      setRemoteSpeaking(avg > 15);
-      animId = requestAnimationFrame(check);
-    };
-    animId = requestAnimationFrame(check);
-    return () => { cancelAnimationFrame(animId); ctx.close(); };
-  }, [remoteStream, isActive]);
 
   const formatTime = (s: number) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
 
