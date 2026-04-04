@@ -6,8 +6,9 @@ import EyeBackground from '../components/EyeBackground';
 import { uploadFile } from '../utils/uploadFile';
 import UserProfile from './UserProfile';
 import CallModal from '../components/CallModal';
+import { IconPhone, IconVideoCall, IconAttach, IconSend } from '../components/Icons';
 
-const API = 'http://void-messenger.online:8000';
+const API = 'https://void-messenger.online';
 
 interface Message {
   from: string;
@@ -133,13 +134,16 @@ export default function Chat() {
         }
       };
 
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: isVideo
+      });
       await pc.setLocalDescription(offer);
 
       ws.current?.send(JSON.stringify({ type: 'call_offer', to: toUsername, data: { sdp: offer, isVideo } }));
       setCallState({ active: false, incoming: false, username: toUsername, isVideo });
     } catch (err) {
-      alert('Нет доступа к микрофону/камере');
+      console.error('Ошибка доступа к медиа:', err);
     }
   };
 
@@ -164,13 +168,16 @@ export default function Chat() {
       };
 
       await pc.setRemoteDescription(new RTCSessionDescription(offerData.sdp));
-      const answer = await pc.createAnswer();
+      const answer = await pc.createAnswer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: isVideo
+      });
       await pc.setLocalDescription(answer);
 
       ws.current?.send(JSON.stringify({ type: 'call_answer', to: fromUsername, data: answer }));
       setCallState({ active: true, incoming: false, username: fromUsername, isVideo });
     } catch (err) {
-      alert('Нет доступа к микрофону/камере');
+      console.error('Ошибка доступа к медиа:', err);
     }
   };
 
@@ -178,10 +185,10 @@ export default function Chat() {
     if (callState) {
       ws.current?.send(JSON.stringify({ type: 'call_end', to: callState.username, data: null }));
     }
-    const pc = peerRef.current;
+    const pc = peerRef.current as RTCPeerConnection;
     pc?.close();
     peerRef.current = null;
-    localStream?.getTracks().forEach(t => t.stop());
+    localStream?.getTracks().forEach(t => { t.stop(); t.enabled = false; });
     setLocalStream(null);
     setRemoteStream(null);
     setCallState(null);
@@ -191,6 +198,8 @@ export default function Chat() {
     if (callState) {
       ws.current?.send(JSON.stringify({ type: 'call_reject', to: callState.username, data: null }));
     }
+    localStream?.getTracks().forEach(t => { t.stop(); t.enabled = false; });
+    setLocalStream(null);
     setCallState(null);
   };
 
@@ -229,9 +238,10 @@ export default function Chat() {
       }
 
       if (msg.type === 'call_reject' || msg.type === 'call_end') {
-        peerRef.current?.close();
+        const pc = peerRef.current as RTCPeerConnection;
+        pc?.close();
         peerRef.current = null;
-        localStream?.getTracks().forEach(t => t.stop());
+        localStream?.getTracks().forEach(t => { t.stop(); t.enabled = false; });
         setLocalStream(null);
         setRemoteStream(null);
         setCallState(null);
@@ -420,17 +430,17 @@ export default function Chat() {
                     type="button"
                     onClick={() => startCall(selectedUser.username, false)}
                     whileTap={{ scale: 0.93 }}
-                    style={{ background: 'rgba(80,230,130,0.2)', border: '1px solid rgba(80,230,130,0.3)', color: 'rgba(80,230,130,0.9)', borderRadius: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '16px' }}
+                    style={{ background: 'rgba(80,230,130,0.2)', border: '1px solid rgba(80,230,130,0.3)', color: 'rgba(80,230,130,0.9)', borderRadius: '8px', padding: '7px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                   >
-                    📞
+                    <IconPhone size={18} color="rgba(80,230,130,0.9)" />
                   </motion.button>
                   <motion.button
                     type="button"
                     onClick={() => startCall(selectedUser.username, true)}
                     whileTap={{ scale: 0.93 }}
-                    style={{ background: 'rgba(120,80,255,0.2)', border: '1px solid rgba(120,80,255,0.3)', color: 'rgba(120,80,255,0.9)', borderRadius: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '16px' }}
+                    style={{ background: 'rgba(120,80,255,0.2)', border: '1px solid rgba(120,80,255,0.3)', color: 'rgba(120,80,255,0.9)', borderRadius: '8px', padding: '7px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                   >
-                    📹
+                    <IconVideoCall size={18} color="rgba(120,80,255,0.9)" />
                   </motion.button>
                 </div>
               </div>
@@ -465,9 +475,9 @@ export default function Chat() {
 
               <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '10px', alignItems: 'center' }}>
                 <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.doc,.docx,.zip" style={{ display: 'none' }} onChange={handleFileUpload} />
-                <motion.button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()} whileTap={{ scale: 0.93 }} style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px', cursor: uploading ? 'wait' : 'pointer', fontSize: '16px', flexShrink: 0 }}>📎</motion.button>
+                <motion.button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()} whileTap={{ scale: 0.93 }} style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px', cursor: uploading ? 'wait' : 'pointer', fontSize: '16px', flexShrink: 0 }}><IconAttach size={18} /></motion.button>
                 <input className="input" placeholder="сообщение..." value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} style={{ flex: 1, minWidth: 0 }} />
-                <motion.button className="btn" onClick={sendMessage} whileTap={{ scale: 0.93 }} style={{ width: '80px', flexShrink: 0 }}>→</motion.button>
+                <motion.button className="btn" onClick={sendMessage} whileTap={{ scale: 0.93 }} style={{ width: '80px', flexShrink: 0 }}><IconSend size={18} /></motion.button>
               </div>
             </motion.div>
           ) : (

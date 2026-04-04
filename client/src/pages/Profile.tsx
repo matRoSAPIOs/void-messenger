@@ -3,7 +3,7 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 
-const API = 'http://void-messenger.online:8000';
+const API = 'https://void-messenger.online';
 
 const AURA_STYLES = [
   { id: 'solid', label: 'Обычная' },
