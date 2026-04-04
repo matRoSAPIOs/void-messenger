@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import EyeBackground from '../components/EyeBackground';
 import { uploadFile } from '../utils/uploadFile';
 
-const API = 'http://127.0.0.1:8000';
+const API = 'http://178.253.45.20:8000';
 
 interface Message {
   from: string;
@@ -107,7 +107,7 @@ export default function Chat() {
 
   useEffect(() => {
     loadContacts();
-    ws.current = new WebSocket(`ws://127.0.0.1:8000/ws/${token}`);
+    ws.current = new WebSocket(`ws://178.253.45.20:8000/ws/${token}`);
     ws.current.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'online_users') {
