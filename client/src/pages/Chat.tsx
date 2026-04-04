@@ -98,7 +98,7 @@ export default function Chat() {
   } | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const peerRef = useRef<any>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
 
   const ws = useRef<WebSocket | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
@@ -114,54 +114,72 @@ export default function Chat() {
   };
 
   const startCall = async (toUsername: string, isVideo: boolean) => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
-    setLocalStream(stream);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+      setLocalStream(stream);
 
-    const SimplePeer = (await import('simple-peer')).default;
-    const peer = new SimplePeer({ initiator: true, stream, trickle: true });
-    peerRef.current = peer;
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      peerRef.current = pc;
 
-    peer.on('signal', (data: any) => {
-      ws.current?.send(JSON.stringify({ type: 'call_offer', to: toUsername, data }));
-    });
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-    peer.on('stream', (remoteStream: MediaStream) => {
-      setRemoteStream(remoteStream);
-    });
+      pc.ontrack = (e) => setRemoteStream(e.streams[0]);
 
-    peer.on('close', () => endCall());
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          ws.current?.send(JSON.stringify({ type: 'call_ice', to: toUsername, data: e.candidate }));
+        }
+      };
 
-    setCallState({ active: false, incoming: false, username: toUsername, isVideo });
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      ws.current?.send(JSON.stringify({ type: 'call_offer', to: toUsername, data: { sdp: offer, isVideo } }));
+      setCallState({ active: false, incoming: false, username: toUsername, isVideo });
+    } catch (err) {
+      alert('Нет доступа к микрофону/камере');
+    }
   };
 
   const acceptCall = async (fromUsername: string, offerData: any, isVideo: boolean) => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
-    setLocalStream(stream);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+      setLocalStream(stream);
 
-    const SimplePeer = (await import('simple-peer')).default;
-    const peer = new SimplePeer({ initiator: false, stream, trickle: true });
-    peerRef.current = peer;
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      peerRef.current = pc;
 
-    peer.signal(offerData);
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-    peer.on('signal', (data: any) => {
-      ws.current?.send(JSON.stringify({ type: 'call_answer', to: fromUsername, data }));
-    });
+      pc.ontrack = (e) => setRemoteStream(e.streams[0]);
 
-    peer.on('stream', (remoteStream: MediaStream) => {
-      setRemoteStream(remoteStream);
-    });
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          ws.current?.send(JSON.stringify({ type: 'call_ice', to: fromUsername, data: e.candidate }));
+        }
+      };
 
-    peer.on('close', () => endCall());
+      await pc.setRemoteDescription(new RTCSessionDescription(offerData.sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
 
-    setCallState(prev => prev ? { ...prev, active: true } : null);
+      ws.current?.send(JSON.stringify({ type: 'call_answer', to: fromUsername, data: answer }));
+      setCallState({ active: true, incoming: false, username: fromUsername, isVideo });
+    } catch (err) {
+      alert('Нет доступа к микрофону/камере');
+    }
   };
 
   const endCall = () => {
     if (callState) {
       ws.current?.send(JSON.stringify({ type: 'call_end', to: callState.username, data: null }));
     }
-    peerRef.current?.destroy();
+    const pc = peerRef.current;
+    pc?.close();
     peerRef.current = null;
     localStream?.getTracks().forEach(t => t.stop());
     setLocalStream(null);
@@ -189,25 +207,29 @@ export default function Chat() {
       }
 
       if (msg.type === 'call_offer') {
-        setCallState({ active: false, incoming: true, username: msg.from, isVideo: !!msg.data?.video });
-        const offerData = msg.data;
-        (window as any).__pendingOffer = { fromUsername: msg.from, offerData, isVideo: !!msg.data?.video };
+        const isVideo = msg.data?.isVideo || false;
+        setCallState({ active: false, incoming: true, username: msg.from, isVideo });
+        (window as any).__pendingOffer = { fromUsername: msg.from, offerData: msg.data, isVideo };
         return;
       }
 
       if (msg.type === 'call_answer') {
-        peerRef.current?.signal(msg.data);
+        const pc = peerRef.current;
+        await pc?.setRemoteDescription(new RTCSessionDescription(msg.data));
         setCallState(prev => prev ? { ...prev, active: true } : null);
         return;
       }
 
       if (msg.type === 'call_ice') {
-        peerRef.current?.signal(msg.data);
+        const pc = peerRef.current;
+        try {
+          await pc?.addIceCandidate(new RTCIceCandidate(msg.data));
+        } catch {}
         return;
       }
 
       if (msg.type === 'call_reject' || msg.type === 'call_end') {
-        peerRef.current?.destroy();
+        peerRef.current?.close();
         peerRef.current = null;
         localStream?.getTracks().forEach(t => t.stop());
         setLocalStream(null);
