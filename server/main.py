@@ -239,6 +239,15 @@ async def websocket_endpoint(websocket: WebSocket, token: str, db: AsyncSession 
             result2 = await db.execute(select(User).where(User.username == msg["to"]))
             recipient = result2.scalar_one_or_none()
 
+            if msg.get("type") in ["call_offer", "call_answer", "call_ice", "call_reject", "call_end"]:
+                if msg["to"] in connected_users:
+                    await connected_users[msg["to"]].send_text(json.dumps({
+                        "type": msg["type"],
+                        "from": username,
+                        "data": msg.get("data")
+                    }))
+                continue
+
             if sender and recipient:
                 message = Message(
                     content=msg["content"],

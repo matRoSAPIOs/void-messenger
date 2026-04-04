@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import EyeBackground from '../components/EyeBackground';
 import { uploadFile } from '../utils/uploadFile';
 import UserProfile from './UserProfile';
+import CallModal from '../components/CallModal';
 
 const API = 'http://178.253.45.20:8000';
 
@@ -31,14 +32,10 @@ const Avatar = ({ user, size = 34, showOnline, isOnline }: {
 
   const getAura = () => {
     switch (auraStyle) {
-      case 'pulse':
-        return { boxShadow: `0 0 0 3px ${auraColor}60` };
-      case 'neon':
-        return { boxShadow: `0 0 8px 2px ${auraColor}, 0 0 16px 4px ${auraColor}40` };
-      case 'rainbow':
-        return { outline: '3px solid transparent', backgroundClip: 'padding-box' };
-      default:
-        return { boxShadow: `0 0 0 2px ${auraColor}` };
+      case 'pulse': return { boxShadow: `0 0 0 3px ${auraColor}60` };
+      case 'neon': return { boxShadow: `0 0 8px 2px ${auraColor}, 0 0 16px 4px ${auraColor}40` };
+      case 'rainbow': return { outline: '3px solid transparent', backgroundClip: 'padding-box' };
+      default: return { boxShadow: `0 0 0 2px ${auraColor}` };
     }
   };
 
@@ -55,13 +52,11 @@ const Avatar = ({ user, size = 34, showOnline, isOnline }: {
         background: user.avatar ? 'transparent' : 'rgba(120,80,255,0.4)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: size * 0.38, fontWeight: 500, overflow: 'hidden',
-        position: 'relative', zIndex: 1,
-        ...getAura()
+        position: 'relative', zIndex: 1, ...getAura()
       }}>
         {user.avatar
           ? <img src={user.avatar} alt="av" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          : user.username[0]?.toUpperCase()
-        }
+          : user.username[0]?.toUpperCase()}
       </div>
       {showOnline && (
         <motion.div
@@ -89,14 +84,25 @@ export default function Chat() {
   const [searchError, setSearchError] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [unread, setUnread] = useState<Record<string, number>>({});
-  const ws = useRef<WebSocket | null>(null);
-  const messagesEnd = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [viewingUser, setViewingUser] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [caption, setCaption] = useState('');
-  const [viewingUser, setViewingUser] = useState<string | null>(null);
+
+  const [callState, setCallState] = useState<{
+    active: boolean;
+    incoming: boolean;
+    username: string;
+    isVideo: boolean;
+  } | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const peerRef = useRef<any>(null);
+
+  const ws = useRef<WebSocket | null>(null);
+  const messagesEnd = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const token = localStorage.getItem('token');
   const myUsername = localStorage.getItem('username');
@@ -107,15 +113,109 @@ export default function Chat() {
     setContacts(res.data);
   };
 
+  const startCall = async (toUsername: string, isVideo: boolean) => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+    setLocalStream(stream);
+
+    const SimplePeer = (await import('simple-peer')).default;
+    const peer = new SimplePeer({ initiator: true, stream, trickle: true });
+    peerRef.current = peer;
+
+    peer.on('signal', (data: any) => {
+      ws.current?.send(JSON.stringify({ type: 'call_offer', to: toUsername, data }));
+    });
+
+    peer.on('stream', (remoteStream: MediaStream) => {
+      setRemoteStream(remoteStream);
+    });
+
+    peer.on('close', () => endCall());
+
+    setCallState({ active: false, incoming: false, username: toUsername, isVideo });
+  };
+
+  const acceptCall = async (fromUsername: string, offerData: any, isVideo: boolean) => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+    setLocalStream(stream);
+
+    const SimplePeer = (await import('simple-peer')).default;
+    const peer = new SimplePeer({ initiator: false, stream, trickle: true });
+    peerRef.current = peer;
+
+    peer.signal(offerData);
+
+    peer.on('signal', (data: any) => {
+      ws.current?.send(JSON.stringify({ type: 'call_answer', to: fromUsername, data }));
+    });
+
+    peer.on('stream', (remoteStream: MediaStream) => {
+      setRemoteStream(remoteStream);
+    });
+
+    peer.on('close', () => endCall());
+
+    setCallState(prev => prev ? { ...prev, active: true } : null);
+  };
+
+  const endCall = () => {
+    if (callState) {
+      ws.current?.send(JSON.stringify({ type: 'call_end', to: callState.username, data: null }));
+    }
+    peerRef.current?.destroy();
+    peerRef.current = null;
+    localStream?.getTracks().forEach(t => t.stop());
+    setLocalStream(null);
+    setRemoteStream(null);
+    setCallState(null);
+  };
+
+  const rejectCall = () => {
+    if (callState) {
+      ws.current?.send(JSON.stringify({ type: 'call_reject', to: callState.username, data: null }));
+    }
+    setCallState(null);
+  };
+
   useEffect(() => {
     loadContacts();
     ws.current = new WebSocket(`ws://178.253.45.20:8000/ws/${token}`);
-    ws.current.onmessage = (e) => {
+
+    ws.current.onmessage = async (e) => {
       const msg = JSON.parse(e.data);
+
       if (msg.type === 'online_users') {
         setOnlineUsers(msg.users);
         return;
       }
+
+      if (msg.type === 'call_offer') {
+        setCallState({ active: false, incoming: true, username: msg.from, isVideo: !!msg.data?.video });
+        const offerData = msg.data;
+        (window as any).__pendingOffer = { fromUsername: msg.from, offerData, isVideo: !!msg.data?.video };
+        return;
+      }
+
+      if (msg.type === 'call_answer') {
+        peerRef.current?.signal(msg.data);
+        setCallState(prev => prev ? { ...prev, active: true } : null);
+        return;
+      }
+
+      if (msg.type === 'call_ice') {
+        peerRef.current?.signal(msg.data);
+        return;
+      }
+
+      if (msg.type === 'call_reject' || msg.type === 'call_end') {
+        peerRef.current?.destroy();
+        peerRef.current = null;
+        localStream?.getTracks().forEach(t => t.stop());
+        setLocalStream(null);
+        setRemoteStream(null);
+        setCallState(null);
+        return;
+      }
+
       const chatKey = msg.from === myUsername ? msg.to : msg.from;
       setMessages(prev => ({
         ...prev,
@@ -123,16 +223,12 @@ export default function Chat() {
       }));
       if (msg.from !== myUsername) {
         loadContacts();
-        setUnread(prev => ({
-          ...prev,
-          [msg.from]: (prev[msg.from] || 0) + 1
-        }));
+        setUnread(prev => ({ ...prev, [msg.from]: (prev[msg.from] || 0) + 1 }));
       }
     };
+
     return () => {
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.close();
-      }
+      if (ws.current?.readyState === WebSocket.OPEN) ws.current.close();
     };
   }, []);
 
@@ -145,14 +241,9 @@ export default function Chat() {
     setSearchResult(null);
     try {
       const res = await axios.get(`${API}/search?tag=${searchTag}`);
-      if (res.data.username === myUsername) {
-        setSearchError('Это ты сам');
-        return;
-      }
+      if (res.data.username === myUsername) { setSearchError('Это ты сам'); return; }
       setSearchResult(res.data);
-    } catch {
-      setSearchError('Пользователь не найден');
-    }
+    } catch { setSearchError('Пользователь не найден'); }
   };
 
   const addContact = async (user: User) => {
@@ -184,10 +275,7 @@ export default function Chat() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setPreviewUrl(prev => {
-      if (prev) URL.revokeObjectURL(prev);
-      return file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
-    });
+    setPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return file.type.startsWith('image/') ? URL.createObjectURL(file) : null; });
     setPreviewFile(file);
     e.target.value = '';
   };
@@ -202,23 +290,14 @@ export default function Chat() {
       const fileContent = isImage ? `__img__${url}` : isVideo ? `__vid__${url}` : `__file__${previewFile.name}__url__${url}`;
       const content = caption ? `${fileContent}__caption__${caption}` : fileContent;
       ws.current.send(JSON.stringify({ to: selectedUser.username, content }));
-      setPreviewUrl(prev => {
-        if (prev) URL.revokeObjectURL(prev);
-        return null;
-      });
+      setPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
       setPreviewFile(null);
       setCaption('');
-    } catch {
-      alert('Ошибка загрузки');
-    }
+    } catch { alert('Ошибка загрузки'); }
     setUploading(false);
   };
 
-  const logout = () => {
-    localStorage.clear();
-    navigate('/auth');
-  };
-
+  const logout = () => { localStorage.clear(); navigate('/auth'); };
   const currentMessages = selectedUser ? (messages[selectedUser.username] || []) : [];
 
   return (
@@ -230,85 +309,33 @@ export default function Chat() {
         transition={{ duration: 0.4, ease: 'easeOut' }}
         style={{ width: '240px', display: 'flex', flexDirection: 'column' }}
       >
-        <div
-          onClick={() => navigate('/profile')}
-          style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)', cursor: 'pointer' }}
-        >
+        <div onClick={() => navigate('/profile')} style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)', cursor: 'pointer' }}>
           <div style={{ fontSize: '16px', fontWeight: 500 }}>VOID</div>
           <div style={{ fontSize: '11px', color: 'rgba(120,80,255,0.9)', marginTop: '2px' }}>{myTag}</div>
           <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.2)', marginTop: '4px' }}>← нажми чтобы открыть профиль</div>
         </div>
 
         <div style={{ padding: '10px' }}>
-          <motion.button
-            className="btn"
-            onClick={() => setShowSearch(!showSearch)}
-            style={{ fontSize: '12px', padding: '8px' }}
-            whileTap={{ scale: 0.97 }}
-          >
+          <motion.button className="btn" onClick={() => setShowSearch(!showSearch)} style={{ fontSize: '12px', padding: '8px' }} whileTap={{ scale: 0.97 }}>
             {showSearch ? '✕ закрыть' : '+ найти пользователя'}
           </motion.button>
         </div>
 
         <AnimatePresence>
           {showSearch && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.25 }}
-              style={{ overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.07)' }}
-            >
+            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }} style={{ overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
               <div style={{ padding: '0 10px 10px' }}>
                 <div style={{ position: 'relative', marginBottom: '8px' }}>
-                  <span style={{
-                    position: 'absolute', left: '10px', top: '50%',
-                    transform: 'translateY(-50%)',
-                    color: 'rgba(120,80,255,0.9)', fontSize: '13px'
-                  }}>@</span>
-                  <input
-                    className="input"
-                    placeholder="тег пользователя"
-                    value={searchTag.replace('@', '')}
-                    onChange={e => setSearchTag(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && searchUser()}
-                    style={{ paddingLeft: '24px', fontSize: '12px', padding: '7px 10px 7px 24px' }}
-                  />
+                  <span style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'rgba(120,80,255,0.9)', fontSize: '13px' }}>@</span>
+                  <input className="input" placeholder="тег пользователя" value={searchTag.replace('@', '')} onChange={e => setSearchTag(e.target.value)} onKeyDown={e => e.key === 'Enter' && searchUser()} style={{ paddingLeft: '24px', fontSize: '12px', padding: '7px 10px 7px 24px' }} />
                 </div>
-                <motion.button
-                  className="btn"
-                  onClick={searchUser}
-                  style={{ fontSize: '12px', padding: '7px' }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  найти
-                </motion.button>
-
+                <motion.button className="btn" onClick={searchUser} style={{ fontSize: '12px', padding: '7px' }} whileTap={{ scale: 0.97 }}>найти</motion.button>
                 <AnimatePresence>
-                  {searchError && (
-                    <motion.p
-                      initial={{ opacity: 0, y: -4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0 }}
-                      style={{ color: 'rgba(255,80,80,0.9)', fontSize: '11px', marginTop: '6px' }}
-                    >
-                      {searchError}
-                    </motion.p>
-                  )}
+                  {searchError && <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} style={{ color: 'rgba(255,80,80,0.9)', fontSize: '11px', marginTop: '6px' }}>{searchError}</motion.p>}
                 </AnimatePresence>
-
                 <AnimatePresence>
                   {searchResult && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0 }}
-                      style={{
-                        marginTop: '8px', padding: '8px', borderRadius: '8px',
-                        background: 'rgba(255,255,255,0.05)',
-                        display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-                      }}
-                    >
+                    <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} style={{ marginTop: '8px', padding: '8px', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <Avatar user={searchResult} size={30} />
                         <div>
@@ -316,17 +343,7 @@ export default function Chat() {
                           <div style={{ fontSize: '11px', color: 'rgba(120,80,255,0.8)' }}>{searchResult.tag}</div>
                         </div>
                       </div>
-                      <motion.button
-                        onClick={() => addContact(searchResult)}
-                        whileTap={{ scale: 0.95 }}
-                        style={{
-                          background: 'rgba(120,80,255,0.5)', border: '1px solid rgba(120,80,255,0.6)',
-                          color: 'white', borderRadius: '6px', padding: '4px 10px',
-                          cursor: 'pointer', fontSize: '11px'
-                        }}
-                      >
-                        добавить
-                      </motion.button>
+                      <motion.button onClick={() => addContact(searchResult)} whileTap={{ scale: 0.95 }} style={{ background: 'rgba(120,80,255,0.5)', border: '1px solid rgba(120,80,255,0.6)', color: 'white', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', fontSize: '11px' }}>добавить</motion.button>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -336,52 +353,18 @@ export default function Chat() {
         </AnimatePresence>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
-          {contacts.length === 0 && (
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              style={{ fontSize: '12px', color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginTop: '20px' }}
-            >
-              найди друзей по тегу
-            </motion.p>
-          )}
+          {contacts.length === 0 && <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ fontSize: '12px', color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginTop: '20px' }}>найди друзей по тегу</motion.p>}
           <AnimatePresence>
             {contacts.map(user => (
-              <motion.div
-                key={user.id}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.2 }}
-                onClick={() => selectUser(user)}
-                whileHover={{ background: 'rgba(255,255,255,0.05)' }}
-                style={{
-                  padding: '10px 12px', borderRadius: '8px', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: '10px',
-                  background: selectedUser?.id === user.id ? 'rgba(120,80,255,0.25)' : 'transparent',
-                  marginBottom: '2px'
-                }}
-              >
+              <motion.div key={user.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ duration: 0.2 }} onClick={() => selectUser(user)} whileHover={{ background: 'rgba(255,255,255,0.05)' }} style={{ padding: '10px 12px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px', background: selectedUser?.id === user.id ? 'rgba(120,80,255,0.25)' : 'transparent', marginBottom: '2px' }}>
                 <Avatar user={user} size={34} showOnline isOnline={onlineUsers.includes(user.username)} />
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: '13px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {user.username}
-                  </div>
+                  <div style={{ fontSize: '13px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user.username}</div>
                   <div style={{ fontSize: '11px', color: 'rgba(120,80,255,0.7)' }}>{user.tag}</div>
                 </div>
                 <AnimatePresence>
                   {(unread[user.username] || 0) > 0 && (
-                    <motion.div
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      exit={{ scale: 0 }}
-                      style={{
-                        background: 'rgba(120,80,255,0.9)',
-                        color: 'white', fontSize: '10px', fontWeight: 600,
-                        borderRadius: '10px', padding: '2px 6px', minWidth: '18px',
-                        textAlign: 'center'
-                      }}
-                    >
+                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} style={{ background: 'rgba(120,80,255,0.9)', color: 'white', fontSize: '10px', fontWeight: 600, borderRadius: '10px', padding: '2px 6px', minWidth: '18px', textAlign: 'center' }}>
                       {unread[user.username]}
                     </motion.div>
                   )}
@@ -392,107 +375,63 @@ export default function Chat() {
         </div>
 
         <div style={{ padding: '12px' }}>
-          <motion.button
-            className="btn"
-            onClick={logout}
-            whileTap={{ scale: 0.97 }}
-            style={{ background: 'rgba(255,60,60,0.3)', borderColor: 'rgba(255,60,60,0.4)' }}
-          >
-            выйти
-          </motion.button>
+          <motion.button className="btn" onClick={logout} whileTap={{ scale: 0.97 }} style={{ background: 'rgba(255,60,60,0.3)', borderColor: 'rgba(255,60,60,0.4)' }}>выйти</motion.button>
         </div>
       </motion.div>
 
-      <motion.div
-        className="glass"
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.1 }}
-        style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
-      >
+      <motion.div className="glass" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.1 }} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         <AnimatePresence mode="wait">
           {selectedUser ? (
-            <motion.div
-              key={selectedUser.id}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
-            >
+            <motion.div key={selectedUser.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <div onClick={() => setViewingUser(selectedUser.username)} style={{ cursor: 'pointer' }}>
                   <Avatar user={selectedUser} size={36} showOnline isOnline={onlineUsers.includes(selectedUser.username)} />
                 </div>
-                <div>
+                <div style={{ flex: 1 }}>
                   <div style={{ fontSize: '14px', fontWeight: 500 }}>{selectedUser.username}</div>
-                  <motion.div
-                    animate={{ color: onlineUsers.includes(selectedUser.username) ? 'rgba(80,230,130,0.9)' : 'rgba(255,255,255,0.3)' }}
-                    transition={{ duration: 0.5 }}
-                    style={{ fontSize: '11px' }}
-                  >
+                  <motion.div animate={{ color: onlineUsers.includes(selectedUser.username) ? 'rgba(80,230,130,0.9)' : 'rgba(255,255,255,0.3)' }} transition={{ duration: 0.5 }} style={{ fontSize: '11px' }}>
                     {onlineUsers.includes(selectedUser.username) ? 'в сети' : 'не в сети'}
                   </motion.div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <motion.button
+                    type="button"
+                    onClick={() => startCall(selectedUser.username, false)}
+                    whileTap={{ scale: 0.93 }}
+                    style={{ background: 'rgba(80,230,130,0.2)', border: '1px solid rgba(80,230,130,0.3)', color: 'rgba(80,230,130,0.9)', borderRadius: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '16px' }}
+                  >
+                    📞
+                  </motion.button>
+                  <motion.button
+                    type="button"
+                    onClick={() => startCall(selectedUser.username, true)}
+                    whileTap={{ scale: 0.93 }}
+                    style={{ background: 'rgba(120,80,255,0.2)', border: '1px solid rgba(120,80,255,0.3)', color: 'rgba(120,80,255,0.9)', borderRadius: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '16px' }}
+                  >
+                    📹
+                  </motion.button>
                 </div>
               </div>
 
               <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <AnimatePresence initial={false}>
                   {currentMessages.map((msg, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      transition={{ duration: 0.2, ease: 'easeOut' }}
-                      style={{ display: 'flex', justifyContent: msg.from === myUsername ? 'flex-end' : 'flex-start' }}
-                    >
-                      <div style={{
-                        maxWidth: '65%', padding: '9px 13px', borderRadius: '14px',
-                        fontSize: '13px', lineHeight: 1.5,
-                        background: msg.from === myUsername ? 'rgba(120,80,255,0.5)' : 'rgba(255,255,255,0.08)',
-                        border: msg.from === myUsername ? '1px solid rgba(120,80,255,0.6)' : '1px solid rgba(255,255,255,0.1)',
-                        borderBottomRightRadius: msg.from === myUsername ? '4px' : '14px',
-                        borderBottomLeftRadius: msg.from === myUsername ? '14px' : '4px',
-                      }}>
+                    <motion.div key={i} initial={{ opacity: 0, y: 10, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.2, ease: 'easeOut' }} style={{ display: 'flex', justifyContent: msg.from === myUsername ? 'flex-end' : 'flex-start' }}>
+                      <div style={{ maxWidth: '65%', padding: '9px 13px', borderRadius: '14px', fontSize: '13px', lineHeight: 1.5, background: msg.from === myUsername ? 'rgba(120,80,255,0.5)' : 'rgba(255,255,255,0.08)', border: msg.from === myUsername ? '1px solid rgba(120,80,255,0.6)' : '1px solid rgba(255,255,255,0.1)', borderBottomRightRadius: msg.from === myUsername ? '4px' : '14px', borderBottomLeftRadius: msg.from === myUsername ? '14px' : '4px' }}>
                         {msg.content.startsWith('__img__') ? (
                           <div>
-                            <img
-                              src={msg.content.split('__caption__')[0].replace('__img__', '')}
-                              alt="img"
-                              style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }}
-                            />
-                            {msg.content.includes('__caption__') && (
-                              <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>
-                                {msg.content.split('__caption__')[1]}
-                              </div>
-                            )}
+                            <img src={msg.content.split('__caption__')[0].replace('__img__', '')} alt="img" style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }} />
+                            {msg.content.includes('__caption__') && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</div>}
                           </div>
                         ) : msg.content.startsWith('__vid__') ? (
                           <div>
-                            <video
-                              src={msg.content.split('__caption__')[0].replace('__vid__', '')}
-                              controls
-                              style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }}
-                            />
-                            {msg.content.includes('__caption__') && (
-                              <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>
-                                {msg.content.split('__caption__')[1]}
-                              </div>
-                            )}
+                            <video src={msg.content.split('__caption__')[0].replace('__vid__', '')} controls style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }} />
+                            {msg.content.includes('__caption__') && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</div>}
                           </div>
                         ) : msg.content.startsWith('__file__') ? (
-                          <a
-                            href={msg.content.split('__url__')[1].split('__caption__')[0]}
-                            target="_blank"
-                            rel="noreferrer"
-                            style={{ color: 'rgba(180,150,255,0.9)', fontSize: '12px' }}
-                          >
+                          <a href={msg.content.split('__url__')[1].split('__caption__')[0]} target="_blank" rel="noreferrer" style={{ color: 'rgba(180,150,255,0.9)', fontSize: '12px' }}>
                             📎 {msg.content.split('__file__')[1].split('__url__')[0]}
-                            {msg.content.includes('__caption__') && (
-                              <span style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>
-                                {msg.content.split('__caption__')[1]}
-                              </span>
-                            )}
+                            {msg.content.includes('__caption__') && <span style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</span>}
                           </a>
                         ) : msg.content}
                       </div>
@@ -503,53 +442,14 @@ export default function Chat() {
               </div>
 
               <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '10px', alignItems: 'center' }}>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*,video/*,.pdf,.doc,.docx,.zip"
-                  style={{ display: 'none' }}
-                  onChange={handleFileUpload}
-                />
-                <motion.button
-                  type="button"
-                  disabled={uploading}
-                  onClick={() => fileInputRef.current?.click()}
-                  whileTap={{ scale: 0.93 }}
-                  style={{
-                    background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
-                    color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px',
-                    cursor: uploading ? 'wait' : 'pointer', fontSize: '16px', flexShrink: 0,
-                    opacity: uploading ? 0.6 : 1,
-                  }}
-                >
-                  📎
-                </motion.button>
-                <input
-                  className="input"
-                  placeholder="сообщение..."
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && sendMessage()}
-                  style={{ flex: 1, minWidth: 0 }}
-                />
-                <motion.button
-                  className="btn"
-                  onClick={sendMessage}
-                  whileTap={{ scale: 0.93 }}
-                  style={{ width: '80px', flexShrink: 0 }}
-                >
-                  →
-                </motion.button>
+                <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.doc,.docx,.zip" style={{ display: 'none' }} onChange={handleFileUpload} />
+                <motion.button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()} whileTap={{ scale: 0.93 }} style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px', cursor: uploading ? 'wait' : 'pointer', fontSize: '16px', flexShrink: 0 }}>📎</motion.button>
+                <input className="input" placeholder="сообщение..." value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} style={{ flex: 1, minWidth: 0 }} />
+                <motion.button className="btn" onClick={sendMessage} whileTap={{ scale: 0.93 }} style={{ width: '80px', flexShrink: 0 }}>→</motion.button>
               </div>
             </motion.div>
           ) : (
-            <motion.div
-              key="empty"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px', position: 'relative', overflow: 'hidden' }}
-            >
+            <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px', position: 'relative', overflow: 'hidden' }}>
               <EyeBackground contained />
               <div style={{ color: 'rgba(255,255,255,0.15)', fontSize: '14px', position: 'absolute', bottom: '20px', left: 0, right: 0, textAlign: 'center', zIndex: 1 }}>выбери чат слева</div>
             </motion.div>
@@ -559,101 +459,48 @@ export default function Chat() {
 
       <AnimatePresence>
         {previewFile && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            style={{
-              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              zIndex: 100
-            }}
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="glass"
-              style={{ padding: '20px', width: '400px', maxWidth: '90vw' }}
-            >
-              <div style={{ fontSize: '14px', fontWeight: 500, marginBottom: '16px' }}>
-                Отправить файл
-              </div>
-
-              {previewUrl && (
-                <img
-                  src={previewUrl}
-                  alt="preview"
-                  style={{ width: '100%', borderRadius: '10px', marginBottom: '14px', maxHeight: '260px', objectFit: 'cover' }}
-                />
-              )}
-
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="glass" style={{ padding: '20px', width: '400px', maxWidth: '90vw' }}>
+              <div style={{ fontSize: '14px', fontWeight: 500, marginBottom: '16px' }}>Отправить файл</div>
+              {previewUrl && <img src={previewUrl} alt="preview" style={{ width: '100%', borderRadius: '10px', marginBottom: '14px', maxHeight: '260px', objectFit: 'cover' }} />}
               {!previewUrl && (
-                <div style={{
-                  padding: '20px', background: 'rgba(255,255,255,0.05)',
-                  borderRadius: '10px', marginBottom: '14px',
-                  display: 'flex', alignItems: 'center', gap: '10px'
-                }}>
+                <div style={{ padding: '20px', background: 'rgba(255,255,255,0.05)', borderRadius: '10px', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <span style={{ fontSize: '24px' }}>📎</span>
                   <div>
                     <div style={{ fontSize: '13px', fontWeight: 500 }}>{previewFile.name}</div>
-                    <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>
-                      {(previewFile.size / 1024 / 1024).toFixed(2)} МБ
-                    </div>
+                    <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>{(previewFile.size / 1024 / 1024).toFixed(2)} МБ</div>
                   </div>
                 </div>
               )}
-
-              <input
-                className="input"
-                placeholder="добавить подпись..."
-                value={caption}
-                onChange={e => setCaption(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && sendFile()}
-                style={{ marginBottom: '12px' }}
-              />
-
+              <input className="input" placeholder="добавить подпись..." value={caption} onChange={e => setCaption(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendFile()} style={{ marginBottom: '12px' }} />
               <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewUrl(prev => {
-                      if (prev) URL.revokeObjectURL(prev);
-                      return null;
-                    });
-                    setPreviewFile(null);
-                    setCaption('');
-                  }}
-                  style={{
-                    flex: 1, background: 'rgba(255,255,255,0.07)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    color: 'rgba(255,255,255,0.6)', borderRadius: '8px',
-                    padding: '10px', cursor: 'pointer', fontSize: '13px'
-                  }}
-                >
-                  отмена
-                </button>
-                <motion.button
-                  className="btn"
-                  onClick={sendFile}
-                  whileTap={{ scale: 0.97 }}
-                  style={{ flex: 1 }}
-                  disabled={uploading}
-                >
-                  {uploading ? 'загрузка...' : 'отправить →'}
-                </motion.button>
+                <button type="button" onClick={() => { setPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; }); setPreviewFile(null); setCaption(''); }} style={{ flex: 1, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)', borderRadius: '8px', padding: '10px', cursor: 'pointer', fontSize: '13px' }}>отмена</button>
+                <motion.button className="btn" onClick={sendFile} whileTap={{ scale: 0.97 }} style={{ flex: 1 }} disabled={uploading}>{uploading ? 'загрузка...' : 'отправить →'}</motion.button>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {viewingUser && (
-        <UserProfile
-          username={viewingUser}
-          onClose={() => setViewingUser(null)}
-          onMessage={() => setViewingUser(null)}
+      {callState && (
+        <CallModal
+          isIncoming={callState.incoming}
+          callerName={callState.username}
+          isActive={callState.active}
+          isVideo={callState.isVideo}
+          localStream={localStream}
+          remoteStream={remoteStream}
+          onAccept={() => {
+            const pending = (window as any).__pendingOffer;
+            if (pending) acceptCall(pending.fromUsername, pending.offerData, pending.isVideo);
+          }}
+          onReject={rejectCall}
+          onEnd={endCall}
         />
+      )}
+
+      {viewingUser && (
+        <UserProfile username={viewingUser} onClose={() => setViewingUser(null)} onMessage={() => setViewingUser(null)} />
       )}
     </div>
   );
