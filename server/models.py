@@ -13,6 +13,7 @@ class User(Base):
     bio = Column(String, nullable=True)
     aura_color = Column(String, nullable=True, default="#7850ff")
     aura_style = Column(String, nullable=True, default="solid")
+    banner = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Contact(Base):

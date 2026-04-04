@@ -74,7 +74,8 @@ async def get_user_profile(username: str, db: AsyncSession = Depends(get_db)):
         "avatar": user.avatar,
         "bio": user.bio,
         "aura_color": user.aura_color or "#7850ff",
-        "aura_style": user.aura_style or "solid"
+        "aura_style": user.aura_style or "solid",
+        "banner": user.banner,
     }
 
 @app.get("/profile")
@@ -93,7 +94,8 @@ async def get_profile(token: str, db: AsyncSession = Depends(get_db)):
         "avatar": user.avatar,
         "bio": user.bio,
         "aura_color": user.aura_color or "#7850ff",
-        "aura_style": user.aura_style or "solid"
+        "aura_style": user.aura_style or "solid",
+        "banner": user.banner,
     }
 
 @app.post("/profile")
@@ -122,6 +124,8 @@ async def update_profile(data: dict, db: AsyncSession = Depends(get_db)):
         user.aura_color = data["aura_color"]
     if "aura_style" in data:
         user.aura_style = data["aura_style"]
+    if "banner" in data:
+        user.banner = data["banner"]
     await db.commit()
     return {"ok": True, "token": new_token, "username": user.username, "tag": user.tag}
 
