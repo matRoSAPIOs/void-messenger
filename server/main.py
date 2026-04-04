@@ -61,6 +61,22 @@ async def login(data: dict, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
     return {"token": create_token({"sub": user.username}), "username": user.username, "tag": user.tag}
 
+@app.get("/user/{username}")
+async def get_user_profile(username: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Не найден")
+    return {
+        "id": user.id,
+        "username": user.username,
+        "tag": user.tag,
+        "avatar": user.avatar,
+        "bio": user.bio,
+        "aura_color": user.aura_color or "#7850ff",
+        "aura_style": user.aura_style or "solid"
+    }
+
 @app.get("/profile")
 async def get_profile(token: str, db: AsyncSession = Depends(get_db)):
     username = decode_token(token)

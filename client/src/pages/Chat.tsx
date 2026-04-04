@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import EyeBackground from '../components/EyeBackground';
 import { uploadFile } from '../utils/uploadFile';
+import UserProfile from './UserProfile';
 
 const API = 'http://178.253.45.20:8000';
 
@@ -95,6 +96,7 @@ export default function Chat() {
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [caption, setCaption] = useState('');
+  const [viewingUser, setViewingUser] = useState<string | null>(null);
   const navigate = useNavigate();
   const token = localStorage.getItem('token');
   const myUsername = localStorage.getItem('username');
@@ -419,7 +421,9 @@ export default function Chat() {
               style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
             >
               <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <Avatar user={selectedUser} size={36} showOnline isOnline={onlineUsers.includes(selectedUser.username)} />
+                <div onClick={() => setViewingUser(selectedUser.username)} style={{ cursor: 'pointer' }}>
+                  <Avatar user={selectedUser} size={36} showOnline isOnline={onlineUsers.includes(selectedUser.username)} />
+                </div>
                 <div>
                   <div style={{ fontSize: '14px', fontWeight: 500 }}>{selectedUser.username}</div>
                   <motion.div
@@ -643,6 +647,14 @@ export default function Chat() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {viewingUser && (
+        <UserProfile
+          username={viewingUser}
+          onClose={() => setViewingUser(null)}
+          onMessage={() => setViewingUser(null)}
+        />
+      )}
     </div>
   );
 }
