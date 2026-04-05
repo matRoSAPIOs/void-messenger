@@ -10,8 +10,9 @@ interface Props {
   onEnd: () => void;
   isActive: boolean;
   localStream: MediaStream | null;
-  remoteStream: MediaStream | null;
   isVideo: boolean;
+  remoteVideoRef: React.RefObject<HTMLVideoElement | null>;
+  remoteAudioRef: React.RefObject<HTMLAudioElement | null>;
 }
 
 const IconVideoOff = ({ color = 'white', size = 20 }: { color?: string, size?: number }) => (
@@ -28,33 +29,17 @@ const IconPhoneAccept = ({ color = 'white', size = 20 }: { color?: string, size?
 
 export default function CallModal({
   isIncoming, callerName, onAccept, onReject, onEnd,
-  isActive, localStream, remoteStream, isVideo
+  isActive, localStream, isVideo, remoteVideoRef, remoteAudioRef
 }: Props) {
   const localVideo = useRef<HTMLVideoElement>(null);
-  const remoteVideo = useRef<HTMLVideoElement>(null);
-  const remoteAudio = useRef<HTMLAudioElement>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const speaking = false;
-  const remoteSpeaking = false;
 
   useEffect(() => {
-    if (localStream && localVideo.current) {
-      localVideo.current.srcObject = localStream;
-    }
+    if (!localStream || !localVideo.current) return;
+    localVideo.current.srcObject = localStream;
   }, [localStream]);
-
-  useEffect(() => {
-    if (!remoteStream) return;
-    const set = () => {
-      if (remoteVideo.current) remoteVideo.current.srcObject = remoteStream;
-      if (remoteAudio.current) remoteAudio.current.srcObject = remoteStream;
-    };
-    set();
-    const t = setTimeout(set, 500);
-    return () => clearTimeout(t);
-  }, [remoteStream, isActive]);
 
   useEffect(() => {
     if (!isActive) { setSeconds(0); return; }
@@ -89,92 +74,56 @@ export default function CallModal({
         }}
       >
         <style>{`
-          @keyframes speakRing {
-            0%,100% { box-shadow: 0 0 0 0px rgba(120,80,255,0.6); }
-            50% { box-shadow: 0 0 0 10px rgba(120,80,255,0); }
-          }
-          @keyframes remoteRing {
-            0%,100% { box-shadow: 0 0 0 0px rgba(0,200,255,0.6); }
-            50% { box-shadow: 0 0 0 14px rgba(0,200,255,0); }
-          }
           .call-btn { transition: filter 0.2s, transform 0.15s; }
           .call-btn:hover { filter: brightness(1.4); transform: scale(1.1); }
         `}</style>
 
-        <audio ref={remoteAudio} autoPlay playsInline style={{ display: 'none' }} />
+        {/* audio всегда в DOM, srcObject ставится напрямую из Chat.tsx через ref */}
+        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
 
-        {isVideo && isActive ? (
-          <>
-            <div style={{
-              position: 'absolute', inset: '16px',
-              borderRadius: '20px', overflow: 'hidden',
-              boxShadow: remoteSpeaking
-                ? '0 0 0 3px rgba(0,200,255,0.8), 0 0 30px rgba(0,200,255,0.4)'
-                : '0 0 0 1px rgba(255,255,255,0.08)',
-              transition: 'box-shadow 0.3s'
-            }}>
-              <video ref={remoteVideo} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
+        {/* video всегда в DOM (opacity, не display:none) чтобы браузер мог грузить медиа */}
+        <div style={{
+          opacity: isVideo && isActive ? 1 : 0,
+          pointerEvents: isVideo && isActive ? 'auto' : 'none',
+          position: 'absolute', inset: '16px',
+          borderRadius: '20px', overflow: 'hidden',
+          boxShadow: '0 0 0 1px rgba(255,255,255,0.08)',
+          transition: 'opacity 0.3s'
+        }}>
+          <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        </div>
 
-            {localStream && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                style={{
-                  position: 'absolute', bottom: '110px', right: '28px',
-                  width: '120px', height: '170px',
-                  borderRadius: '14px', overflow: 'hidden', zIndex: 10,
-                  boxShadow: speaking
-                    ? '0 0 0 3px rgba(120,80,255,0.9), 0 0 20px rgba(120,80,255,0.5)'
-                    : '0 0 0 2px rgba(120,80,255,0.3)',
-                  transition: 'box-shadow 0.3s'
-                }}
-              >
-                <video ref={localVideo} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
-              </motion.div>
-            )}
+        <div style={{
+          opacity: isVideo && isActive && !!localStream ? 1 : 0,
+          pointerEvents: 'none',
+          position: 'absolute', bottom: '110px', right: '28px',
+          width: '120px', height: '170px',
+          borderRadius: '14px', overflow: 'hidden', zIndex: 10,
+          boxShadow: '0 0 0 2px rgba(120,80,255,0.3)',
+          transition: 'opacity 0.3s'
+        }}>
+          <video ref={localVideo} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
+        </div>
 
-            <div style={{
-              position: 'absolute', top: '28px', left: '50%',
-              transform: 'translateX(-50%)',
-              background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)',
-              borderRadius: '20px', padding: '5px 14px',
-              fontSize: '13px', color: 'rgba(255,255,255,0.8)', zIndex: 10
-            }}>
-              {formatTime(seconds)}
-            </div>
-          </>
-        ) : (
+        {isVideo && isActive && (
+          <div style={{ position: 'absolute', top: '28px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)', borderRadius: '20px', padding: '5px 14px', fontSize: '13px', color: 'rgba(255,255,255,0.8)', zIndex: 10 }}>
+            {formatTime(seconds)}
+          </div>
+        )}
+
+        {(!isVideo || !isActive) && (
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', marginBottom: '40px' }}
           >
-            <div style={{
-              width: '110px', height: '110px', borderRadius: '50%',
-              background: 'rgba(120,80,255,0.4)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '42px', fontWeight: 500, color: 'white',
-              animation: isActive && remoteSpeaking ? 'remoteRing 0.6s ease-in-out infinite' : 'none',
-              boxShadow: isActive && remoteSpeaking
-                ? '0 0 0 3px rgba(0,200,255,0.8)'
-                : '0 0 0 8px rgba(120,80,255,0.15)',
-              transition: 'box-shadow 0.3s'
-            }}>
+            <div style={{ width: '110px', height: '110px', borderRadius: '50%', background: 'rgba(120,80,255,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '42px', fontWeight: 500, color: 'white', boxShadow: '0 0 0 8px rgba(120,80,255,0.15)' }}>
               {callerName[0]?.toUpperCase()}
             </div>
             <div style={{ fontSize: '22px', fontWeight: 500, color: 'white' }}>{callerName}</div>
             <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.4)' }}>
               {isActive ? formatTime(seconds) : isIncoming ? 'входящий звонок...' : 'вызов...'}
             </div>
-            {isActive && speaking && (
-              <div style={{
-                fontSize: '12px', color: 'rgba(120,80,255,0.9)',
-                animation: 'speakRing 0.5s ease-in-out infinite'
-              }}>
-                говоришь...
-              </div>
-            )}
           </motion.div>
         )}
 

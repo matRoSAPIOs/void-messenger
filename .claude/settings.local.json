@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(ssh root@178.253.45.20:*)",
+      "Bash(npm run:*)",
+      "Bash(scp -r build/* root@178.253.45.20:/var/www/html/)"
+    ]
+  }
+}

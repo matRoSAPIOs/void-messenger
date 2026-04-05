@@ -98,8 +98,13 @@ export default function Chat() {
     isVideo: boolean;
   } | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [dbg, setDbg] = useState<string[]>([]);
+  const log = (msg: string) => setDbg(p => [...p.slice(-8), msg]);
   const peerRef = useRef<RTCPeerConnection | null>(null);
+  const iceCandidatesBuffer = useRef<RTCIceCandidateInit[]>([]);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const remoteMS = useRef<MediaStream>(new MediaStream());
 
   const ws = useRef<WebSocket | null>(null);
   const messagesEnd = useRef<HTMLDivElement>(null);
@@ -115,18 +120,59 @@ export default function Chat() {
   };
 
   const startCall = async (toUsername: string, isVideo: boolean) => {
+    console.log('START CALL CALLED', toUsername, isVideo);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: isVideo ? { facingMode: 'user' } : false,
+      });
       setLocalStream(stream);
 
       const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          {
+            urls: [
+              'turn:178.253.45.20:3478?transport=udp',
+              'turn:178.253.45.20:3478?transport=tcp',
+              'turns:178.253.45.20:5349?transport=tcp',
+            ],
+            username: 'void',
+            credential: 'voidpass123'
+          },
+          // Публичные TURN серверы как резерв
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+        ]
       });
       peerRef.current = pc;
 
+      pc.onconnectionstatechange = () => log('conn:' + pc.connectionState);
+      pc.oniceconnectionstatechange = () => log('ice:' + pc.iceConnectionState);
+
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      pc.ontrack = (e) => setRemoteStream(e.streams[0]);
+      remoteMS.current = new MediaStream();
+      pc.ontrack = (e) => {
+        log('track:' + e.track.kind);
+        remoteMS.current.addTrack(e.track);
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteMS.current;
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteMS.current;
+      };
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
@@ -134,10 +180,7 @@ export default function Chat() {
         }
       };
 
-      const offer = await pc.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: isVideo
-      });
+      const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
       ws.current?.send(JSON.stringify({ type: 'call_offer', to: toUsername, data: { sdp: offer, isVideo } }));
@@ -149,17 +192,56 @@ export default function Chat() {
 
   const acceptCall = async (fromUsername: string, offerData: any, isVideo: boolean) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: isVideo ? { facingMode: 'user' } : false,
+      });
       setLocalStream(stream);
 
       const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          {
+            urls: [
+              'turn:178.253.45.20:3478?transport=udp',
+              'turn:178.253.45.20:3478?transport=tcp',
+              'turns:178.253.45.20:5349?transport=tcp',
+            ],
+            username: 'void',
+            credential: 'voidpass123'
+          },
+          // Публичные TURN серверы как резерв
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+        ]
       });
       peerRef.current = pc;
 
+      pc.onconnectionstatechange = () => console.log('connection state:', pc.connectionState);
+      pc.oniceconnectionstatechange = () => console.log('ice state:', pc.iceConnectionState);
+
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      pc.ontrack = (e) => setRemoteStream(e.streams[0]);
+      remoteMS.current = new MediaStream();
+      pc.ontrack = (e) => {
+        remoteMS.current.addTrack(e.track);
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteMS.current;
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteMS.current;
+      };
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
@@ -168,13 +250,16 @@ export default function Chat() {
       };
 
       await pc.setRemoteDescription(new RTCSessionDescription(offerData.sdp));
-      const answer = await pc.createAnswer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: isVideo
-      });
+      const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
       ws.current?.send(JSON.stringify({ type: 'call_answer', to: fromUsername, data: answer }));
+      for (const candidate of iceCandidatesBuffer.current) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch {}
+      }
+      iceCandidatesBuffer.current = [];
       setCallState({ active: true, incoming: false, username: fromUsername, isVideo });
     } catch (err) {
       console.error('Ошибка доступа к медиа:', err);
@@ -188,9 +273,10 @@ export default function Chat() {
     const pc = peerRef.current as RTCPeerConnection;
     pc?.close();
     peerRef.current = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
     localStream?.getTracks().forEach(t => { t.stop(); t.enabled = false; });
     setLocalStream(null);
-    setRemoteStream(null);
     setCallState(null);
   };
 
@@ -202,6 +288,14 @@ export default function Chat() {
     setLocalStream(null);
     setCallState(null);
   };
+
+  // ontrack может сработать ДО монтирования CallModal (refs ещё null).
+  // Когда callState.active становится true — применяем накопленный stream.
+  useEffect(() => {
+    if (!callState?.active) return;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteMS.current;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteMS.current;
+  }, [callState?.active]);
 
   useEffect(() => {
     loadContacts();
@@ -225,15 +319,31 @@ export default function Chat() {
       if (msg.type === 'call_answer') {
         const pc = peerRef.current;
         await pc?.setRemoteDescription(new RTCSessionDescription(msg.data));
+        for (const candidate of iceCandidatesBuffer.current) {
+          try {
+            await pc?.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch {}
+        }
+        iceCandidatesBuffer.current = [];
         setCallState(prev => prev ? { ...prev, active: true } : null);
         return;
       }
 
       if (msg.type === 'call_ice') {
         const pc = peerRef.current;
-        try {
-          await pc?.addIceCandidate(new RTCIceCandidate(msg.data));
-        } catch {}
+        if (!pc) {
+          // pc ещё не создан — пользователь не принял звонок.
+          // Буферизуем кандидат, иначе он потеряется навсегда.
+          iceCandidatesBuffer.current.push(msg.data);
+          return;
+        }
+        if (pc.remoteDescription) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(msg.data));
+          } catch {}
+        } else {
+          iceCandidatesBuffer.current.push(msg.data);
+        }
         return;
       }
 
@@ -242,8 +352,9 @@ export default function Chat() {
         pc?.close();
         peerRef.current = null;
         localStream?.getTracks().forEach(t => { t.stop(); t.enabled = false; });
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
         setLocalStream(null);
-        setRemoteStream(null);
         setCallState(null);
         return;
       }
@@ -514,6 +625,12 @@ export default function Chat() {
         )}
       </AnimatePresence>
 
+      {callState && dbg.length > 0 && (
+        <div style={{ position: 'fixed', top: 8, left: 8, zIndex: 9999, background: 'rgba(0,0,0,0.9)', color: '#0f0', fontFamily: 'monospace', fontSize: 12, padding: '8px 12px', borderRadius: 8, maxWidth: '90vw' }}>
+          {dbg.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+      )}
+
       {callState && (
         <CallModal
           isIncoming={callState.incoming}
@@ -521,7 +638,8 @@ export default function Chat() {
           isActive={callState.active}
           isVideo={callState.isVideo}
           localStream={localStream}
-          remoteStream={remoteStream}
+          remoteVideoRef={remoteVideoRef}
+          remoteAudioRef={remoteAudioRef}
           onAccept={() => {
             const pending = (window as any).__pendingOffer;
             if (pending) acceptCall(pending.fromUsername, pending.offerData, pending.isVideo);
