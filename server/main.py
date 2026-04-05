@@ -1,7 +1,8 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, update
+from datetime import datetime
 import json
 import base64
 
@@ -210,10 +211,24 @@ async def get_messages(token: str, with_user: str, db: AsyncSession = Depends(ge
     for m in msgs:
         author = await db.execute(select(User).where(User.id == m.author_id))
         author = author.scalar_one_or_none()
+        reply_preview = None
+        if m.reply_to_id:
+            rp = await db.execute(select(Message).where(Message.id == m.reply_to_id))
+            rp = rp.scalar_one_or_none()
+            if rp:
+                reply_preview = "Сообщение удалено" if rp.is_deleted else rp.content[:120]
         result.append({
+            "id": m.id,
             "from": author.username,
             "to": with_user if author.username == username else username,
-            "content": m.content
+            "content": m.content,
+            "timestamp": m.created_at.isoformat() if m.created_at else None,
+            "is_read": m.is_read or False,
+            "is_deleted": m.is_deleted or False,
+            "edited_at": m.edited_at.isoformat() if m.edited_at else None,
+            "reply_to_id": m.reply_to_id,
+            "reply_preview": reply_preview,
+            "reactions": json.loads(m.reactions) if m.reactions else {},
         })
     return result
 
@@ -232,35 +247,163 @@ async def websocket_endpoint(websocket: WebSocket, token: str, db: AsyncSession 
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
+            msg_type = msg.get("type")
 
             result = await db.execute(select(User).where(User.username == username))
             sender = result.scalar_one_or_none()
 
-            result2 = await db.execute(select(User).where(User.username == msg["to"]))
-            recipient = result2.scalar_one_or_none()
-
-            if msg.get("type") in ["call_offer", "call_answer", "call_ice", "call_reject", "call_end"]:
+            # ── Звонки ──────────────────────────────────────────────────────────
+            if msg_type in ["call_offer", "call_answer", "call_ice", "call_reject", "call_end"]:
                 if msg["to"] in connected_users:
                     await connected_users[msg["to"]].send_text(json.dumps({
-                        "type": msg["type"],
-                        "from": username,
-                        "data": msg.get("data")
+                        "type": msg_type, "from": username, "data": msg.get("data")
                     }))
                 continue
 
+            # ── Индикатор набора ─────────────────────────────────────────────────
+            if msg_type in ["typing", "stop_typing"]:
+                target = msg.get("to")
+                if target and target in connected_users:
+                    await connected_users[target].send_text(json.dumps({"type": msg_type, "from": username}))
+                continue
+
+            # ── Прочитано ────────────────────────────────────────────────────────
+            if msg_type == "read":
+                target_name = msg.get("to")
+                if target_name and sender:
+                    target_res = await db.execute(select(User).where(User.username == target_name))
+                    target_user = target_res.scalar_one_or_none()
+                    if target_user:
+                        await db.execute(
+                            update(Message)
+                            .where(and_(
+                                Message.author_id == target_user.id,
+                                Message.recipient_id == sender.id,
+                                Message.is_read == False
+                            ))
+                            .values(is_read=True)
+                        )
+                        await db.commit()
+                        if target_name in connected_users:
+                            await connected_users[target_name].send_text(
+                                json.dumps({"type": "read", "from": username})
+                            )
+                continue
+
+            # ── Реакции ──────────────────────────────────────────────────────────
+            if msg_type == "react":
+                msg_id = msg.get("msg_id")
+                emoji = msg.get("emoji")
+                if msg_id and emoji and sender:
+                    rm = await db.execute(select(Message).where(Message.id == msg_id))
+                    db_msg = rm.scalar_one_or_none()
+                    if db_msg:
+                        reactions = json.loads(db_msg.reactions or "{}")
+                        users_list = reactions.get(emoji, [])
+                        if username in users_list:
+                            users_list.remove(username)
+                        else:
+                            users_list.append(username)
+                        if users_list:
+                            reactions[emoji] = users_list
+                        elif emoji in reactions:
+                            del reactions[emoji]
+                        db_msg.reactions = json.dumps(reactions)
+                        await db.commit()
+                        payload = json.dumps({"type": "react", "msg_id": msg_id, "reactions": reactions})
+                        a_res = await db.execute(select(User).where(User.id == db_msg.author_id))
+                        r_res = await db.execute(select(User).where(User.id == db_msg.recipient_id))
+                        for u in [a_res.scalar_one_or_none(), r_res.scalar_one_or_none()]:
+                            if u and u.username in connected_users:
+                                await connected_users[u.username].send_text(payload)
+                continue
+
+            # ── Удаление ─────────────────────────────────────────────────────────
+            if msg_type == "delete_msg":
+                msg_id = msg.get("msg_id")
+                if msg_id and sender:
+                    rm = await db.execute(select(Message).where(
+                        and_(Message.id == msg_id, Message.author_id == sender.id)
+                    ))
+                    db_msg = rm.scalar_one_or_none()
+                    if db_msg:
+                        db_msg.is_deleted = True
+                        await db.commit()
+                        r_res = await db.execute(select(User).where(User.id == db_msg.recipient_id))
+                        recipient_u = r_res.scalar_one_or_none()
+                        payload = json.dumps({"type": "delete_msg", "msg_id": msg_id})
+                        if recipient_u and recipient_u.username in connected_users:
+                            await connected_users[recipient_u.username].send_text(payload)
+                        await websocket.send_text(payload)
+                continue
+
+            # ── Редактирование ───────────────────────────────────────────────────
+            if msg_type == "edit_msg":
+                msg_id = msg.get("msg_id")
+                new_content = msg.get("content", "").strip()
+                if msg_id and new_content and sender:
+                    rm = await db.execute(select(Message).where(
+                        and_(Message.id == msg_id, Message.author_id == sender.id)
+                    ))
+                    db_msg = rm.scalar_one_or_none()
+                    if db_msg and not db_msg.is_deleted:
+                        db_msg.content = new_content
+                        db_msg.edited_at = datetime.utcnow()
+                        await db.commit()
+                        r_res = await db.execute(select(User).where(User.id == db_msg.recipient_id))
+                        recipient_u = r_res.scalar_one_or_none()
+                        payload = json.dumps({
+                            "type": "edit_msg", "msg_id": msg_id,
+                            "content": new_content,
+                            "edited_at": db_msg.edited_at.isoformat()
+                        })
+                        if recipient_u and recipient_u.username in connected_users:
+                            await connected_users[recipient_u.username].send_text(payload)
+                        await websocket.send_text(payload)
+                continue
+
+            # ── Обычное сообщение ────────────────────────────────────────────────
+            to_name = msg.get("to")
+            if not to_name:
+                continue
+            result2 = await db.execute(select(User).where(User.username == to_name))
+            recipient = result2.scalar_one_or_none()
+
             if sender and recipient:
+                reply_to_id = msg.get("reply_to_id")
                 message = Message(
                     content=msg["content"],
                     author_id=sender.id,
-                    recipient_id=recipient.id
+                    recipient_id=recipient.id,
+                    reply_to_id=reply_to_id,
                 )
                 db.add(message)
                 await db.commit()
+                await db.refresh(message)
 
-                payload = json.dumps({"from": username, "to": msg["to"], "content": msg["content"]})
+                reply_preview = None
+                if reply_to_id:
+                    rp = await db.execute(select(Message).where(Message.id == reply_to_id))
+                    rp = rp.scalar_one_or_none()
+                    if rp:
+                        reply_preview = "Сообщение удалено" if rp.is_deleted else rp.content[:120]
 
-                if msg["to"] in connected_users:
-                    await connected_users[msg["to"]].send_text(payload)
+                payload = json.dumps({
+                    "id": message.id,
+                    "from": username,
+                    "to": to_name,
+                    "content": msg["content"],
+                    "timestamp": message.created_at.isoformat(),
+                    "is_read": False,
+                    "is_deleted": False,
+                    "edited_at": None,
+                    "reply_to_id": reply_to_id,
+                    "reply_preview": reply_preview,
+                    "reactions": {},
+                })
+
+                if to_name in connected_users:
+                    await connected_users[to_name].send_text(payload)
 
                 existing_contact = await db.execute(select(Contact).where(
                     and_(Contact.owner_id == recipient.id, Contact.contact_id == sender.id)

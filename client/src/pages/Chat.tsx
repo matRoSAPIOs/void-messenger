@@ -11,9 +11,17 @@ import { IconPhone, IconVideoCall, IconAttach, IconSend } from '../components/Ic
 const API = 'https://void-messenger.online';
 
 interface Message {
+  id?: number;
   from: string;
   to: string;
   content: string;
+  timestamp?: string;
+  is_read?: boolean;
+  is_deleted?: boolean;
+  edited_at?: string | null;
+  reply_to_id?: number | null;
+  reply_preview?: string | null;
+  reactions?: Record<string, string[]>;
 }
 
 interface User {
@@ -100,6 +108,15 @@ export default function Chat() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
 
   const [mediaViewer, setMediaViewer] = useState<{ type: 'img' | 'vid'; url: string; caption?: string } | null>(null);
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [editingMsg, setEditingMsg] = useState<Message | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ msg: Message; x: number; y: number } | null>(null);
+  const [reactionPicker, setReactionPicker] = useState<{ msg: Message; x: number; y: number } | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
 
   const [winW, setWinW] = useState(window.innerWidth);
   const [winH, setWinH] = useState(window.innerHeight);
@@ -383,6 +400,63 @@ export default function Chat() {
         return;
       }
 
+      if (msg.type === 'typing') {
+        setTypingUsers(prev => prev.includes(msg.from) ? prev : [...prev, msg.from]);
+        return;
+      }
+      if (msg.type === 'stop_typing') {
+        setTypingUsers(prev => prev.filter(u => u !== msg.from));
+        return;
+      }
+      if (msg.type === 'read') {
+        setMessages(prev => {
+          const updated = { ...prev };
+          for (const key of Object.keys(updated)) {
+            updated[key] = updated[key].map(m =>
+              m.from === myUsername && m.to === msg.from ? { ...m, is_read: true } : m
+            );
+          }
+          return updated;
+        });
+        return;
+      }
+      if (msg.type === 'react') {
+        setMessages(prev => {
+          const updated = { ...prev };
+          for (const key of Object.keys(updated)) {
+            updated[key] = updated[key].map(m =>
+              m.id === msg.msg_id ? { ...m, reactions: msg.reactions } : m
+            );
+          }
+          return updated;
+        });
+        return;
+      }
+      if (msg.type === 'delete_msg') {
+        setMessages(prev => {
+          const updated = { ...prev };
+          for (const key of Object.keys(updated)) {
+            updated[key] = updated[key].map(m =>
+              m.id === msg.msg_id ? { ...m, is_deleted: true } : m
+            );
+          }
+          return updated;
+        });
+        return;
+      }
+      if (msg.type === 'edit_msg') {
+        setMessages(prev => {
+          const updated = { ...prev };
+          for (const key of Object.keys(updated)) {
+            updated[key] = updated[key].map(m =>
+              m.id === msg.msg_id ? { ...m, content: msg.content, edited_at: msg.edited_at } : m
+            );
+          }
+          return updated;
+        });
+        return;
+      }
+
       const chatKey = msg.from === myUsername ? msg.to : msg.from;
       setMessages(prev => ({
         ...prev,
@@ -424,7 +498,10 @@ export default function Chat() {
 
   const selectUser = async (user: User) => {
     setSelectedUser(user);
+    setReplyTo(null);
+    setEditingMsg(null);
     setUnread(prev => ({ ...prev, [user.username]: 0 }));
+    ws.current?.send(JSON.stringify({ type: 'read', to: user.username }));
     if (!messages[user.username]) {
       try {
         const res = await axios.get(`${API}/messages?token=${token}&with_user=${user.username}`);
@@ -433,10 +510,103 @@ export default function Chat() {
     }
   };
 
+  const sendTyping = () => {
+    if (!selectedUser || !ws.current) return;
+    ws.current.send(JSON.stringify({ type: 'typing', to: selectedUser.username }));
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      ws.current?.send(JSON.stringify({ type: 'stop_typing', to: selectedUser.username }));
+    }, 2000);
+  };
+
   const sendMessage = () => {
+    if (editingMsg) {
+      if (!input.trim() || !ws.current) return;
+      ws.current.send(JSON.stringify({ type: 'edit_msg', msg_id: editingMsg.id, content: input }));
+      setEditingMsg(null);
+      setInput('');
+      return;
+    }
     if (!input.trim() || !selectedUser || !ws.current) return;
-    ws.current.send(JSON.stringify({ to: selectedUser.username, content: input }));
+    ws.current.send(JSON.stringify({
+      to: selectedUser.username,
+      content: input,
+      reply_to_id: replyTo?.id ?? null,
+    }));
     setInput('');
+    setReplyTo(null);
+  };
+
+  const sendReaction = (msg: Message, emoji: string) => {
+    ws.current?.send(JSON.stringify({ type: 'react', msg_id: msg.id, emoji }));
+    setReactionPicker(null);
+    setContextMenu(null);
+  };
+
+  const deleteMessage = (msg: Message) => {
+    ws.current?.send(JSON.stringify({ type: 'delete_msg', msg_id: msg.id }));
+    setContextMenu(null);
+  };
+
+  const startEdit = (msg: Message) => {
+    setEditingMsg(msg);
+    setInput(msg.content);
+    setContextMenu(null);
+  };
+
+  const startReply = (msg: Message) => {
+    setReplyTo(msg);
+    setEditingMsg(null);
+    setContextMenu(null);
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const file = e.clipboardData.files[0];
+    if (!file || !file.type.startsWith('image/')) return;
+    e.preventDefault();
+    setPreviewUrl(URL.createObjectURL(file));
+    setPreviewFile(file);
+  };
+
+  const startVoiceRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      voiceChunksRef.current = [];
+      recorder.ondataavailable = e => voiceChunksRef.current.push(e.data);
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(voiceChunksRef.current, { type: 'audio/webm' });
+        const file = new File([blob], 'voice.webm', { type: 'audio/webm' });
+        if (!selectedUser || !ws.current) return;
+        try {
+          const url = await uploadFile(file);
+          ws.current.send(JSON.stringify({ to: selectedUser.username, content: `__audio__${url}` }));
+        } catch { alert('Ошибка загрузки голосового'); }
+      };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch { alert('Нет доступа к микрофону'); }
+  };
+
+  const stopVoiceRecording = () => {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+    setIsRecording(false);
+  };
+
+  const formatTimestamp = (ts?: string) => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+    const isYesterday = d.toDateString() === yesterday.toDateString();
+    const hm = d.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
+    if (isToday) return hm;
+    if (isYesterday) return `вчера ${hm}`;
+    return `${d.getDate().toString().padStart(2,'0')}.${(d.getMonth()+1).toString().padStart(2,'0')} ${hm}`;
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -587,54 +757,129 @@ export default function Chat() {
                 </div>
               </div>
 
-              <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '6px' }}
+                onClick={() => { setContextMenu(null); setReactionPicker(null); }}
+              >
                 <AnimatePresence initial={false}>
-                  {currentMessages.map((msg, i) => (
-                    <motion.div key={i} initial={{ opacity: 0, y: 10, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.2, ease: 'easeOut' }} style={{ display: 'flex', justifyContent: msg.from === myUsername ? 'flex-end' : 'flex-start' }}>
-                      <div style={{ maxWidth: '65%', padding: '9px 13px', borderRadius: '14px', fontSize: '13px', lineHeight: 1.5, background: msg.from === myUsername ? 'rgba(120,80,255,0.5)' : 'rgba(255,255,255,0.08)', border: msg.from === myUsername ? '1px solid rgba(120,80,255,0.6)' : '1px solid rgba(255,255,255,0.1)', borderBottomRightRadius: msg.from === myUsername ? '4px' : '14px', borderBottomLeftRadius: msg.from === myUsername ? '14px' : '4px' }}>
-                        {msg.content.startsWith('__img__') ? (() => {
-                          const url = msg.content.split('__caption__')[0].replace('__img__', '');
-                          const cap = msg.content.includes('__caption__') ? msg.content.split('__caption__')[1] : undefined;
-                          return (
-                            <div>
-                              <img onClick={() => setMediaViewer({ type: 'img', url, caption: cap })} src={url} alt="img" style={{ maxWidth: '100%', borderRadius: '8px', display: 'block', cursor: 'zoom-in' }} />
-                              {cap && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{cap}</div>}
+                  {currentMessages.map((msg, i) => {
+                    const isMine = msg.from === myUsername;
+                    const longPressRef = { timer: 0 as any };
+                    const openCtx = (x: number, y: number) => setContextMenu({ msg, x, y });
+                    const renderContent = () => {
+                      if (msg.is_deleted) return <span style={{ opacity: 0.4, fontStyle: 'italic' }}>Сообщение удалено</span>;
+                      if (msg.content.startsWith('__img__')) {
+                        const url = msg.content.split('__caption__')[0].replace('__img__', '');
+                        const cap = msg.content.includes('__caption__') ? msg.content.split('__caption__')[1] : undefined;
+                        return <div><img onClick={() => setMediaViewer({ type: 'img', url, caption: cap })} src={url} alt="img" style={{ maxWidth: '100%', borderRadius: '8px', display: 'block', cursor: 'zoom-in' }} />{cap && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{cap}</div>}</div>;
+                      }
+                      if (msg.content.startsWith('__vid__')) {
+                        const url = msg.content.split('__caption__')[0].replace('__vid__', '');
+                        const cap = msg.content.includes('__caption__') ? msg.content.split('__caption__')[1] : undefined;
+                        return <div><div onClick={() => setMediaViewer({ type: 'vid', url, caption: cap })} style={{ position: 'relative', cursor: 'pointer', borderRadius: '8px', overflow: 'hidden', display: 'inline-block', maxWidth: '100%' }}><video src={url} style={{ maxWidth: '100%', display: 'block', pointerEvents: 'none' }} /><div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg></div></div></div>{cap && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{cap}</div>}</div>;
+                      }
+                      if (msg.content.startsWith('__audio__')) {
+                        const url = msg.content.replace('__audio__', '');
+                        return <audio controls src={url} style={{ maxWidth: '220px', height: '36px', display: 'block' }} />;
+                      }
+                      if (msg.content.startsWith('__file__')) {
+                        return <a href={msg.content.split('__url__')[1].split('__caption__')[0]} target="_blank" rel="noreferrer" style={{ color: 'rgba(180,150,255,0.9)', fontSize: '12px' }}>📎 {msg.content.split('__file__')[1].split('__url__')[0]}{msg.content.includes('__caption__') && <span style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</span>}</a>;
+                      }
+                      return <>{msg.content}</>;
+                    };
+                    return (
+                      <motion.div key={msg.id ?? i} initial={{ opacity: 0, y: 10, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.2, ease: 'easeOut' }}
+                        style={{ display: 'flex', justifyContent: isMine ? 'flex-end' : 'flex-start' }}
+                      >
+                        <div style={{ maxWidth: '65%' }}>
+                          {/* Цитата */}
+                          {msg.reply_to_id && msg.reply_preview && (
+                            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.5)', background: 'rgba(255,255,255,0.06)', borderLeft: '3px solid rgba(120,80,255,0.7)', borderRadius: '6px', padding: '4px 8px', marginBottom: '4px', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              ↩ {msg.reply_preview}
                             </div>
-                          );
-                        })() : msg.content.startsWith('__vid__') ? (() => {
-                          const url = msg.content.split('__caption__')[0].replace('__vid__', '');
-                          const cap = msg.content.includes('__caption__') ? msg.content.split('__caption__')[1] : undefined;
-                          return (
-                            <div>
-                              <div onClick={() => setMediaViewer({ type: 'vid', url, caption: cap })} style={{ position: 'relative', cursor: 'pointer', borderRadius: '8px', overflow: 'hidden', display: 'inline-block', maxWidth: '100%' }}>
-                                <video src={url} style={{ maxWidth: '100%', borderRadius: '8px', display: 'block', pointerEvents: 'none' }} />
-                                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}>
-                                  <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
-                                  </div>
-                                </div>
-                              </div>
-                              {cap && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{cap}</div>}
+                          )}
+                          {/* Пузырь */}
+                          <div
+                            onContextMenu={e => { e.preventDefault(); openCtx(e.clientX, e.clientY); }}
+                            onTouchStart={e => { longPressRef.timer = setTimeout(() => openCtx(e.touches[0].clientX, e.touches[0].clientY), 500); }}
+                            onTouchEnd={() => clearTimeout(longPressRef.timer)}
+                            onTouchMove={() => clearTimeout(longPressRef.timer)}
+                            style={{ padding: '9px 13px', borderRadius: '14px', fontSize: '13px', lineHeight: 1.5, background: isMine ? 'rgba(120,80,255,0.5)' : 'rgba(255,255,255,0.08)', border: isMine ? '1px solid rgba(120,80,255,0.6)' : '1px solid rgba(255,255,255,0.1)', borderBottomRightRadius: isMine ? '4px' : '14px', borderBottomLeftRadius: isMine ? '14px' : '4px', cursor: 'default' }}
+                          >
+                            {renderContent()}
+                          </div>
+                          {/* Реакции */}
+                          {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px', justifyContent: isMine ? 'flex-end' : 'flex-start' }}>
+                              {Object.entries(msg.reactions).map(([emoji, users]) => (
+                                <button key={emoji} onClick={() => sendReaction(msg, emoji)}
+                                  style={{ background: users.includes(myUsername ?? '') ? 'rgba(120,80,255,0.35)' : 'rgba(255,255,255,0.08)', border: users.includes(myUsername ?? '') ? '1px solid rgba(120,80,255,0.5)' : '1px solid rgba(255,255,255,0.12)', borderRadius: '20px', padding: '2px 7px', fontSize: '13px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                  {emoji} <span style={{ fontSize: '11px', opacity: 0.8 }}>{users.length}</span>
+                                </button>
+                              ))}
                             </div>
-                          );
-                        })() : msg.content.startsWith('__file__') ? (
-                          <a href={msg.content.split('__url__')[1].split('__caption__')[0]} target="_blank" rel="noreferrer" style={{ color: 'rgba(180,150,255,0.9)', fontSize: '12px' }}>
-                            📎 {msg.content.split('__file__')[1].split('__url__')[0]}
-                            {msg.content.includes('__caption__') && <span style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</span>}
-                          </a>
-                        ) : msg.content}
+                          )}
+                          {/* Время + статус прочтения */}
+                          <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.3)', marginTop: '3px', textAlign: isMine ? 'right' : 'left', display: 'flex', alignItems: 'center', justifyContent: isMine ? 'flex-end' : 'flex-start', gap: '4px' }}>
+                            {msg.edited_at && <span style={{ opacity: 0.6 }}>ред.</span>}
+                            {formatTimestamp(msg.timestamp)}
+                            {isMine && <span style={{ color: msg.is_read ? 'rgba(120,80,255,0.9)' : 'rgba(255,255,255,0.3)', fontSize: '12px', lineHeight: 1 }}>{msg.is_read ? '✓✓' : '✓'}</span>}
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+                {/* Индикатор набора */}
+                <AnimatePresence>
+                  {selectedUser && typingUsers.includes(selectedUser.username) && (
+                    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}
+                      style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                      <div style={{ padding: '8px 14px', borderRadius: '14px', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', fontSize: '13px', color: 'rgba(255,255,255,0.4)', display: 'flex', gap: '3px', alignItems: 'center' }}>
+                        <span style={{ animation: 'blink 1.2s 0s infinite' }}>•</span>
+                        <span style={{ animation: 'blink 1.2s 0.3s infinite' }}>•</span>
+                        <span style={{ animation: 'blink 1.2s 0.6s infinite' }}>•</span>
+                        <style>{`@keyframes blink { 0%,80%,100%{opacity:0.2} 40%{opacity:1} }`}</style>
                       </div>
                     </motion.div>
-                  ))}
+                  )}
                 </AnimatePresence>
                 <div ref={messagesEnd} />
               </div>
 
-              <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '10px', alignItems: 'center' }}>
+              {/* Плашка ответа / редактирования */}
+              <AnimatePresence>
+                {(replyTo || editingMsg) && (
+                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                    style={{ borderTop: '1px solid rgba(255,255,255,0.07)', padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(120,80,255,0.08)', overflow: 'hidden' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '11px', color: 'rgba(120,80,255,0.9)', marginBottom: '2px' }}>{editingMsg ? 'Редактирование' : `↩ Ответ для ${replyTo?.from}`}</div>
+                      <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(editingMsg ?? replyTo)?.content?.slice(0, 80)}</div>
+                    </div>
+                    <button type="button" onClick={() => { setReplyTo(null); setEditingMsg(null); setInput(''); }}
+                      style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '18px', padding: '0 4px' }}>✕</button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <input ref={fileInputRef} type="file" accept="image/*,video/*,.pdf,.doc,.docx,.zip" style={{ display: 'none' }} onChange={handleFileUpload} />
-                <motion.button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()} whileTap={{ scale: 0.93 }} style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px', cursor: uploading ? 'wait' : 'pointer', fontSize: '16px', flexShrink: 0 }}><IconAttach size={18} /></motion.button>
-                <input className="input" placeholder="сообщение..." value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} style={{ flex: 1, minWidth: 0 }} />
-                <motion.button className="btn" onClick={sendMessage} whileTap={{ scale: 0.93 }} style={{ width: '80px', flexShrink: 0 }}><IconSend size={18} /></motion.button>
+                <motion.button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()} whileTap={{ scale: 0.93 }} style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px', cursor: uploading ? 'wait' : 'pointer', flexShrink: 0 }}><IconAttach size={18} /></motion.button>
+                <input
+                  className="input" placeholder={editingMsg ? 'Редактировать...' : 'сообщение...'} value={input}
+                  onChange={e => { setInput(e.target.value); sendTyping(); }}
+                  onKeyDown={e => { if (e.key === 'Enter') sendMessage(); if (e.key === 'Escape') { setReplyTo(null); setEditingMsg(null); setInput(''); } }}
+                  onPaste={handlePaste}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                {/* Голосовое сообщение */}
+                <motion.button type="button"
+                  onMouseDown={startVoiceRecording} onMouseUp={stopVoiceRecording}
+                  onTouchStart={startVoiceRecording} onTouchEnd={stopVoiceRecording}
+                  whileTap={{ scale: 0.93 }}
+                  style={{ background: isRecording ? 'rgba(255,60,60,0.4)' : 'rgba(255,255,255,0.07)', border: `1px solid ${isRecording ? 'rgba(255,60,60,0.6)' : 'rgba(255,255,255,0.1)'}`, color: 'rgba(255,255,255,0.5)', borderRadius: '8px', padding: '9px 12px', cursor: 'pointer', flexShrink: 0, transition: 'background 0.2s' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z"/></svg>
+                </motion.button>
+                <motion.button className="btn" onClick={sendMessage} whileTap={{ scale: 0.93 }} style={{ width: '72px', flexShrink: 0 }}><IconSend size={18} /></motion.button>
               </div>
             </motion.div>
           ) : (
@@ -700,6 +945,47 @@ export default function Chat() {
       {viewingUser && (
         <UserProfile username={viewingUser} onClose={() => setViewingUser(null)} onMessage={() => setViewingUser(null)} />
       )}
+
+      {/* Контекстное меню сообщения */}
+      <AnimatePresence>
+        {contextMenu && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.92 }}
+            transition={{ duration: 0.12 }}
+            style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 500, background: 'rgba(20,18,35,0.97)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', padding: '6px', minWidth: '160px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Пикер реакций */}
+            <div style={{ display: 'flex', gap: '4px', padding: '4px 6px 8px', borderBottom: '1px solid rgba(255,255,255,0.07)', marginBottom: '4px' }}>
+              {['👍','❤️','😂','😮','😢','👏'].map(emoji => (
+                <button key={emoji} onClick={() => sendReaction(contextMenu.msg, emoji)}
+                  style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', padding: '2px', borderRadius: '6px', transition: 'transform 0.1s' }}
+                  onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.3)')}
+                  onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+                >{emoji}</button>
+              ))}
+            </div>
+            {/* Ответить */}
+            <button onClick={() => startReply(contextMenu.msg)} style={{ width: '100%', background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', cursor: 'pointer', padding: '8px 12px', borderRadius: '8px', textAlign: 'left', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.07)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+            >↩ Ответить</button>
+            {/* Редактировать / Удалить — только свои */}
+            {contextMenu.msg.from === myUsername && !contextMenu.msg.is_deleted && (
+              <>
+                <button onClick={() => startEdit(contextMenu.msg)} style={{ width: '100%', background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', cursor: 'pointer', padding: '8px 12px', borderRadius: '8px', textAlign: 'left', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.07)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                >✏️ Редактировать</button>
+                <button onClick={() => deleteMessage(contextMenu.msg)} style={{ width: '100%', background: 'none', border: 'none', color: 'rgba(255,80,80,0.9)', cursor: 'pointer', padding: '8px 12px', borderRadius: '8px', textAlign: 'left', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,60,60,0.12)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                >🗑 Удалить</button>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {mediaViewer && (
