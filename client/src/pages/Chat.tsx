@@ -99,6 +99,8 @@ export default function Chat() {
   } | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
 
+  const [mediaViewer, setMediaViewer] = useState<{ type: 'img' | 'vid'; url: string; caption?: string } | null>(null);
+
   const [winW, setWinW] = useState(window.innerWidth);
   const [winH, setWinH] = useState(window.innerHeight);
   useEffect(() => {
@@ -590,17 +592,32 @@ export default function Chat() {
                   {currentMessages.map((msg, i) => (
                     <motion.div key={i} initial={{ opacity: 0, y: 10, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.2, ease: 'easeOut' }} style={{ display: 'flex', justifyContent: msg.from === myUsername ? 'flex-end' : 'flex-start' }}>
                       <div style={{ maxWidth: '65%', padding: '9px 13px', borderRadius: '14px', fontSize: '13px', lineHeight: 1.5, background: msg.from === myUsername ? 'rgba(120,80,255,0.5)' : 'rgba(255,255,255,0.08)', border: msg.from === myUsername ? '1px solid rgba(120,80,255,0.6)' : '1px solid rgba(255,255,255,0.1)', borderBottomRightRadius: msg.from === myUsername ? '4px' : '14px', borderBottomLeftRadius: msg.from === myUsername ? '14px' : '4px' }}>
-                        {msg.content.startsWith('__img__') ? (
-                          <div>
-                            <img src={msg.content.split('__caption__')[0].replace('__img__', '')} alt="img" style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }} />
-                            {msg.content.includes('__caption__') && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</div>}
-                          </div>
-                        ) : msg.content.startsWith('__vid__') ? (
-                          <div>
-                            <video src={msg.content.split('__caption__')[0].replace('__vid__', '')} controls style={{ maxWidth: '100%', borderRadius: '8px', display: 'block' }} />
-                            {msg.content.includes('__caption__') && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</div>}
-                          </div>
-                        ) : msg.content.startsWith('__file__') ? (
+                        {msg.content.startsWith('__img__') ? (() => {
+                          const url = msg.content.split('__caption__')[0].replace('__img__', '');
+                          const cap = msg.content.includes('__caption__') ? msg.content.split('__caption__')[1] : undefined;
+                          return (
+                            <div>
+                              <img onClick={() => setMediaViewer({ type: 'img', url, caption: cap })} src={url} alt="img" style={{ maxWidth: '100%', borderRadius: '8px', display: 'block', cursor: 'zoom-in' }} />
+                              {cap && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{cap}</div>}
+                            </div>
+                          );
+                        })() : msg.content.startsWith('__vid__') ? (() => {
+                          const url = msg.content.split('__caption__')[0].replace('__vid__', '');
+                          const cap = msg.content.includes('__caption__') ? msg.content.split('__caption__')[1] : undefined;
+                          return (
+                            <div>
+                              <div onClick={() => setMediaViewer({ type: 'vid', url, caption: cap })} style={{ position: 'relative', cursor: 'pointer', borderRadius: '8px', overflow: 'hidden', display: 'inline-block', maxWidth: '100%' }}>
+                                <video src={url} style={{ maxWidth: '100%', borderRadius: '8px', display: 'block', pointerEvents: 'none' }} />
+                                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}>
+                                  <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+                                  </div>
+                                </div>
+                              </div>
+                              {cap && <div style={{ fontSize: '12px', marginTop: '6px', opacity: 0.8 }}>{cap}</div>}
+                            </div>
+                          );
+                        })() : msg.content.startsWith('__file__') ? (
                           <a href={msg.content.split('__url__')[1].split('__caption__')[0]} target="_blank" rel="noreferrer" style={{ color: 'rgba(180,150,255,0.9)', fontSize: '12px' }}>
                             📎 {msg.content.split('__file__')[1].split('__url__')[0]}
                             {msg.content.includes('__caption__') && <span style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>{msg.content.split('__caption__')[1]}</span>}
@@ -683,6 +700,48 @@ export default function Chat() {
       {viewingUser && (
         <UserProfile username={viewingUser} onClose={() => setViewingUser(null)} onMessage={() => setViewingUser(null)} />
       )}
+
+      <AnimatePresence>
+        {mediaViewer && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setMediaViewer(null)}
+            style={{ position: 'fixed', inset: 0, zIndex: 400, background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' }}
+          >
+            <motion.button
+              type="button"
+              onClick={() => setMediaViewer(null)}
+              whileTap={{ scale: 0.9 }}
+              style={{ position: 'absolute', top: '20px', right: '20px', width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.15)', color: 'white', fontSize: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1 }}
+            >✕</motion.button>
+
+            <motion.div
+              initial={{ scale: 0.88, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.88, opacity: 0 }}
+              transition={{ duration: 0.22 }}
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: '92vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}
+            >
+              {mediaViewer.type === 'img' ? (
+                <img
+                  src={mediaViewer.url}
+                  alt=""
+                  style={{ maxWidth: '100%', maxHeight: '78vh', borderRadius: '14px', objectFit: 'contain', boxShadow: '0 8px 40px rgba(0,0,0,0.6)' }}
+                />
+              ) : (
+                <video
+                  src={mediaViewer.url}
+                  controls
+                  autoPlay
+                  style={{ maxWidth: '100%', maxHeight: '78vh', borderRadius: '14px', outline: 'none', boxShadow: '0 8px 40px rgba(0,0,0,0.6)' }}
+                />
+              )}
+              {mediaViewer.caption && (
+                <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)', textAlign: 'center', maxWidth: '500px' }}>{mediaViewer.caption}</div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
