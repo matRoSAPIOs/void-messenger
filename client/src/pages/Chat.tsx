@@ -289,6 +289,18 @@ export default function Chat() {
     setCallState(null);
   };
 
+  const handleFlipCamera = (newStream: MediaStream) => {
+    const newVideoTrack = newStream.getVideoTracks()[0];
+    if (newVideoTrack && peerRef.current) {
+      const sender = peerRef.current.getSenders().find(s => s.track?.kind === 'video');
+      sender?.replaceTrack(newVideoTrack);
+    }
+    setLocalStream(prev => {
+      prev?.getVideoTracks().forEach(t => t.stop());
+      return newStream;
+    });
+  };
+
   // ontrack может сработать ДО монтирования CallModal (refs ещё null).
   // Когда callState.active становится true — применяем накопленный stream.
   useEffect(() => {
@@ -646,6 +658,7 @@ export default function Chat() {
           }}
           onReject={rejectCall}
           onEnd={endCall}
+          onFlipCamera={handleFlipCamera}
         />
       )}
 

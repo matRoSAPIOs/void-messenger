@@ -13,6 +13,7 @@ interface Props {
   isVideo: boolean;
   remoteVideoRef: React.RefObject<HTMLVideoElement | null>;
   remoteAudioRef: React.RefObject<HTMLAudioElement | null>;
+  onFlipCamera?: (newStream: MediaStream) => void;
 }
 
 const IconVideoOff = ({ color = 'white', size = 20 }: { color?: string, size?: number }) => (
@@ -27,14 +28,27 @@ const IconPhoneAccept = ({ color = 'white', size = 20 }: { color?: string, size?
   </svg>
 );
 
+const IconFlipCamera = ({ color = 'white', size = 20 }: { color?: string, size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <path d="M20 5h-3.17L15 3H9L7.17 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-5 11.5V14H9v2.5L5.5 13 9 9.5V12h6V9.5l3.5 3.5-3.5 3.5z" fill={color}/>
+  </svg>
+);
+
+// Detect if device has multiple cameras (mobile)
+const hasTouchScreen = () => navigator.maxTouchPoints > 0;
+
 export default function CallModal({
   isIncoming, callerName, onAccept, onReject, onEnd,
-  isActive, localStream, isVideo, remoteVideoRef, remoteAudioRef
+  isActive, localStream, isVideo, remoteVideoRef, remoteAudioRef, onFlipCamera
 }: Props) {
   const localVideo = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  // local video box dimensions based on actual camera aspect ratio
+  const [localSize, setLocalSize] = useState({ w: 120, h: 170 });
 
   useEffect(() => {
     if (!localStream || !localVideo.current) return;
@@ -59,9 +73,40 @@ export default function CallModal({
     setIsCamOff(c => !c);
   };
 
+  // Resize local preview box to match actual camera aspect ratio
+  const handleLocalMetadata = () => {
+    const v = localVideo.current;
+    if (!v || !v.videoWidth || !v.videoHeight) return;
+    const aspect = v.videoWidth / v.videoHeight;
+    const MAX = 150;
+    if (aspect >= 1) {
+      setLocalSize({ w: MAX, h: Math.round(MAX / aspect) });
+    } else {
+      setLocalSize({ w: Math.round(MAX * aspect), h: MAX });
+    }
+  };
+
+  const flipCamera = async () => {
+    const newFacing = facingMode === 'user' ? 'environment' : 'user';
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: newFacing },
+        audio: false,
+      });
+      // stop old video tracks only
+      localStream?.getVideoTracks().forEach(t => t.stop());
+      if (localVideo.current) localVideo.current.srcObject = newStream;
+      setFacingMode(newFacing);
+      onFlipCamera?.(newStream);
+    } catch (e) {
+      console.error('Не удалось переключить камеру:', e);
+    }
+  };
+
   return (
     <AnimatePresence>
       <motion.div
+        ref={containerRef}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -81,29 +126,59 @@ export default function CallModal({
         {/* audio всегда в DOM, srcObject ставится напрямую из Chat.tsx через ref */}
         <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
 
-        {/* video всегда в DOM (opacity, не display:none) чтобы браузер мог грузить медиа */}
+        {/* Удалённое видео — contain чтобы было видно всё изображение */}
         <div style={{
           opacity: isVideo && isActive ? 1 : 0,
           pointerEvents: isVideo && isActive ? 'auto' : 'none',
           position: 'absolute', inset: '16px',
           borderRadius: '20px', overflow: 'hidden',
+          background: '#000',
           boxShadow: '0 0 0 1px rgba(255,255,255,0.08)',
-          transition: 'opacity 0.3s'
+          transition: 'opacity 0.3s',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+          />
         </div>
 
-        <div style={{
-          opacity: isVideo && isActive && !!localStream ? 1 : 0,
-          pointerEvents: 'none',
-          position: 'absolute', bottom: '110px', right: '28px',
-          width: '120px', height: '170px',
-          borderRadius: '14px', overflow: 'hidden', zIndex: 10,
-          boxShadow: '0 0 0 2px rgba(120,80,255,0.3)',
-          transition: 'opacity 0.3s'
-        }}>
-          <video ref={localVideo} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
-        </div>
+        {/* Локальное видео — перетаскиваемое, размер по реальному aspect ratio камеры */}
+        <motion.div
+          drag
+          dragConstraints={containerRef}
+          dragMomentum={false}
+          style={{
+            opacity: isVideo && isActive && !!localStream ? 1 : 0,
+            pointerEvents: isVideo && isActive && !!localStream ? 'auto' : 'none',
+            position: 'absolute',
+            bottom: '110px', right: '28px',
+            width: `${localSize.w}px`,
+            height: `${localSize.h}px`,
+            borderRadius: '14px', overflow: 'hidden', zIndex: 10,
+            boxShadow: '0 0 0 2px rgba(120,80,255,0.3)',
+            cursor: 'grab',
+            transition: 'opacity 0.3s, width 0.2s, height 0.2s',
+          }}
+          whileDrag={{ cursor: 'grabbing', scale: 1.03 }}
+        >
+          <video
+            ref={localVideo}
+            autoPlay
+            playsInline
+            muted
+            onLoadedMetadata={handleLocalMetadata}
+            style={{
+              width: '100%', height: '100%',
+              objectFit: 'contain',
+              background: '#000',
+              // зеркалим только фронтальную камеру
+              transform: facingMode === 'user' ? 'scaleX(-1)' : 'none',
+            }}
+          />
+        </motion.div>
 
         {isVideo && isActive && (
           <div style={{ position: 'absolute', top: '28px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)', borderRadius: '20px', padding: '5px 14px', fontSize: '13px', color: 'rgba(255,255,255,0.8)', zIndex: 10 }}>
@@ -128,13 +203,12 @@ export default function CallModal({
         )}
 
         <motion.div
-          initial={{ y: 50, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={{ y: 50, opacity: 0 }}
+          initial={{ y: 50, opacity: 0, x: '-50%' }}
+          animate={{ y: 0, opacity: 1, x: '-50%' }}
+          exit={{ y: 50, opacity: 0, x: '-50%' }}
           transition={{ duration: 0.3 }}
           style={{
             position: 'absolute', bottom: '36px', left: '50%',
-            transform: 'translateX(-50%)',
             display: 'flex', gap: '14px', alignItems: 'center',
             background: 'rgba(255,255,255,0.07)',
             backdropFilter: 'blur(20px)',
@@ -161,6 +235,13 @@ export default function CallModal({
             <motion.button type="button" onClick={toggleCam} whileTap={{ scale: 0.9 }} className="call-btn"
               style={{ width: '52px', height: '52px', borderRadius: '50%', background: isCamOff ? 'rgba(255,60,60,0.4)' : 'rgba(255,255,255,0.12)', border: `1px solid ${isCamOff ? 'rgba(255,60,60,0.5)' : 'rgba(255,255,255,0.2)'}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {isCamOff ? <IconVideoOff size={20} /> : <IconVideoCall size={20} />}
+            </motion.button>
+          )}
+
+          {isActive && isVideo && hasTouchScreen() && onFlipCamera && (
+            <motion.button type="button" onClick={flipCamera} whileTap={{ scale: 0.9 }} className="call-btn"
+              style={{ width: '52px', height: '52px', borderRadius: '50%', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <IconFlipCamera size={20} />
             </motion.button>
           )}
 
