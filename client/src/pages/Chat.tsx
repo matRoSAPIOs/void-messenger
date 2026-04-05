@@ -98,6 +98,16 @@ export default function Chat() {
     isVideo: boolean;
   } | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+
+  const [winW, setWinW] = useState(window.innerWidth);
+  const [winH, setWinH] = useState(window.innerHeight);
+  useEffect(() => {
+    const onResize = () => { setWinW(window.innerWidth); setWinH(window.innerHeight); };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  // телефон в портрете: узкий и выше чем шире
+  const isMobilePortrait = winW < 768 && winW < winH;
   const [dbg, setDbg] = useState<string[]>([]);
   const log = (msg: string) => setDbg(p => [...p.slice(-8), msg]);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -456,13 +466,14 @@ export default function Chat() {
   const currentMessages = selectedUser ? (messages[selectedUser.username] || []) : [];
 
   return (
-    <div style={{ display: 'flex', height: '100vh', padding: '20px', gap: '16px' }}>
+    <div style={{ display: 'flex', height: '100vh', padding: isMobilePortrait ? '8px' : '20px', gap: isMobilePortrait ? 0 : '16px' }}>
+      {(!isMobilePortrait || !selectedUser) && (
       <motion.div
         className="glass"
         initial={{ x: -40, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ duration: 0.4, ease: 'easeOut' }}
-        style={{ width: '240px', display: 'flex', flexDirection: 'column' }}
+        style={{ width: isMobilePortrait ? '100%' : '240px', display: 'flex', flexDirection: 'column' }}
       >
         <div onClick={() => navigate('/profile')} style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)', cursor: 'pointer' }}>
           <div style={{ fontSize: '16px', fontWeight: 500 }}>VOID</div>
@@ -533,12 +544,18 @@ export default function Chat() {
           <motion.button className="btn" onClick={logout} whileTap={{ scale: 0.97 }} style={{ background: 'rgba(255,60,60,0.3)', borderColor: 'rgba(255,60,60,0.4)' }}>выйти</motion.button>
         </div>
       </motion.div>
+      )}
 
+      {(!isMobilePortrait || !!selectedUser) && (
       <motion.div className="glass" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.1 }} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         <AnimatePresence mode="wait">
           {selectedUser ? (
             <motion.div key={selectedUser.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {isMobilePortrait && (
+                  <motion.button type="button" onClick={() => setSelectedUser(null)} whileTap={{ scale: 0.9 }}
+                    style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.6)', cursor: 'pointer', padding: '4px 8px 4px 0', fontSize: '20px', lineHeight: 1, flexShrink: 0 }}>‹</motion.button>
+                )}
                 <div onClick={() => setViewingUser(selectedUser.username)} style={{ cursor: 'pointer' }}>
                   <Avatar user={selectedUser} size={36} showOnline isOnline={onlineUsers.includes(selectedUser.username)} />
                 </div>
@@ -606,11 +623,12 @@ export default function Chat() {
           ) : (
             <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px', position: 'relative', overflow: 'hidden' }}>
               <EyeBackground contained />
-              <div style={{ color: 'rgba(255,255,255,0.15)', fontSize: '14px', position: 'absolute', bottom: '20px', left: 0, right: 0, textAlign: 'center', zIndex: 1 }}>выбери чат слева</div>
+              <div style={{ color: 'rgba(255,255,255,0.15)', fontSize: '14px', position: 'absolute', bottom: '20px', left: 0, right: 0, textAlign: 'center', zIndex: 1 }}>{isMobilePortrait ? 'выбери чат' : 'выбери чат слева'}</div>
             </motion.div>
           )}
         </AnimatePresence>
       </motion.div>
+      )}
 
       <AnimatePresence>
         {previewFile && (
